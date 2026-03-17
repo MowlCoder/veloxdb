@@ -1,6 +1,18 @@
+mod commands;
+mod db;
+mod models;
+
+use commands::{
+  connect_db, get_schema, get_tables, list_connections_command, run_query,
+  set_active_connection,
+};
+use db::AppState;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .manage(AppState::default())
+    .plugin(tauri_plugin_store::Builder::default().build())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -11,6 +23,14 @@ pub fn run() {
       }
       Ok(())
     })
+    .invoke_handler(tauri::generate_handler![
+      connect_db,
+      list_connections_command,
+      set_active_connection,
+      run_query,
+      get_tables,
+      get_schema
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
