@@ -1,79 +1,45 @@
-import { invoke } from '@tauri-apps/api/core'
+import type {
+  ColumnInfo,
+  ConnectionInput,
+  ConnectionSummary,
+  QueryRequest,
+  QueryResult,
+  TableInfo,
+} from '@/data/types'
 
-export type ConnectionInput = {
-  id?: string
-  name: string
-  host: string
-  port: number
-  database: string
-  user: string
-  password: string
+import { TauriVeloxDbRepository } from '@/data/repositories/TauriVeloxDbRepository'
+
+export type {
+  ColumnInfo,
+  ConnectionInput,
+  ConnectionSummary,
+  QueryRequest,
+  QueryResult,
+  TableInfo,
 }
 
-export type ConnectionSummary = {
-  id: string
-  name: string
-  host: string
-  port: number
-  database: string
-  user: string
-  connectedAt: string
-}
-
-export type QueryRequest = {
-  connectionId?: string
-  sql: string
-}
-
-export type TableInfo = {
-  schema: string
-  name: string
-  previewQuery: string
-}
-
-export type ColumnInfo = {
-  tableSchema: string
-  tableName: string
-  columnName: string
-  dataType: string
-  isNullable: boolean
-}
-
-export type QueryResult = {
-  columns: string[]
-  rows: Array<Record<string, string | null>>
-  rowCount: number
-  executionMs: number
-  truncated: boolean
-  commandTag: number | null
-}
+const repository = new TauriVeloxDbRepository()
 
 export async function connectDb(input: ConnectionInput) {
-  return invoke<ConnectionSummary>('connect_db', { input })
+  return repository.connectDb(input)
 }
 
 export async function listConnections() {
-  return invoke<ConnectionSummary[]>('list_connections_command')
+  return repository.listConnections()
 }
 
 export async function setActiveConnection(connectionId: string) {
-  return invoke<ConnectionSummary>('set_active_connection', { connectionId })
+  return repository.setActiveConnection(connectionId)
 }
 
 export async function runQuery(request: QueryRequest) {
-  return invoke<QueryResult>('run_query', { input: request })
+  return repository.runQuery(request)
 }
 
 export async function getTables(connectionId?: string) {
-  return invoke<TableInfo[]>('get_tables', { connectionId })
+  return repository.getTables(connectionId)
 }
 
 export async function getSchema(connectionId: string | undefined, table: TableInfo) {
-  return invoke<ColumnInfo[]>('get_schema', {
-    input: {
-      connectionId,
-      tableSchema: table.schema,
-      tableName: table.name,
-    },
-  })
+  return repository.getSchema(connectionId, table)
 }

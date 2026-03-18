@@ -11,7 +11,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from '@/components/ui/command'
-import type { TableInfo } from '@/lib/tauri'
+import type { TableInfo } from '@/data/types'
 
 type CommandPaletteProps = {
   open: boolean
@@ -89,3 +89,4 @@ export function CommandPalette({
     </CommandDialog>
   )
 }
+

@@ -7,7 +7,7 @@ import {
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
-import type { QueryResult } from '@/lib/tauri'
+import type { QueryResult } from '@/data/types'
 
 type ResultsGridProps = {
   result: QueryResult | null
@@ -91,7 +91,10 @@ export function ResultsGrid({ result, isPending = false }: ResultsGridProps) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="grid border-b border-border bg-muted/30" style={{ gridTemplateColumns: templateColumns }}>
+      <div
+        className="grid border-b border-border bg-muted/30"
+        style={{ gridTemplateColumns: templateColumns }}
+      >
         {table.getFlatHeaders().map((header) => (
           <div
             key={header.id}
@@ -137,3 +140,4 @@ export function ResultsGrid({ result, isPending = false }: ResultsGridProps) {
     </div>
   )
 }
+

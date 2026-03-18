@@ -1,11 +1,11 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   MoonIcon,
   PlayIcon,
@@ -13,23 +13,21 @@ import {
   SunIcon,
 } from '@phosphor-icons/react'
 
-import { ConnectionDialog } from '@/components/app/connection-dialog'
-import { CommandPalette } from '@/components/app/command-palette'
-import { ResultsGrid } from '@/components/app/results-grid'
-import { SqlEditor } from '@/components/app/sql-editor'
-import { ConnectionsSidebarTree } from '@/components/app/tables-sidebar'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { useConnectionsQuery } from '@/features/connections/queries'
+import { useConnectMutation, useActivateConnectionMutation } from '@/features/connections/queries'
+import { ConnectionsSidebarTree } from '@/features/connections/components/ConnectionsSidebarTree'
+import { ConnectionDialog } from '@/features/connections/components/ConnectionDialog'
+import { CommandPalette } from '@/features/commands/components/CommandPalette'
+import { ResultsGrid } from '@/features/queries/components/ResultsGrid'
+import { SqlEditor } from '@/features/queries/components/SqlEditor'
+import { useTablesQuery } from '@/features/tables/queries'
+import { TablePropertiesDialog } from '@/features/schema/components/TablePropertiesDialog'
+import { useTableSchemaQuery } from '@/features/schema/queries'
+import { useRunQueryMutation } from '@/features/queries/queries'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  connectDb,
-  getSchema,
-  getTables,
-  listConnections,
-  runQuery,
-  setActiveConnection,
-  type ConnectionSummary,
-  type TableInfo,
-} from '@/lib/tauri'
+import type { ConnectionSummary, TableInfo } from '@/data/types'
 
 const DEFAULT_QUERY = `select table_schema, table_name
 from information_schema.tables
@@ -39,9 +37,13 @@ limit 100;`
 
 const SIDEBAR_WIDTH_KEY = 'veloxdb.sidebarWidth'
 const SIDEBAR_COLLAPSED_KEY = 'veloxdb.sidebarCollapsed'
-const DEFAULT_SIDEBAR_WIDTH = 320
-const MIN_SIDEBAR_WIDTH = 240
+const RESULTS_HEIGHT_KEY = 'veloxdb.resultsHeight'
+const DEFAULT_SIDEBAR_WIDTH = 280
+const MIN_SIDEBAR_WIDTH = 220
 const MAX_SIDEBAR_WIDTH = 520
+const DEFAULT_RESULTS_HEIGHT = 260
+const MIN_RESULTS_HEIGHT = 160
+const MIN_QUERY_HEIGHT = 180
 
 function clampSidebarWidth(value: number) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value))
@@ -56,8 +58,12 @@ function readSidebarCollapsed() {
   return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 }
 
+function readResultsHeight() {
+  const value = Number(window.localStorage.getItem(RESULTS_HEIGHT_KEY))
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_RESULTS_HEIGHT
+}
+
 function App() {
-  const queryClient = useQueryClient()
   const [connection, setConnection] = useState<ConnectionSummary | null>(null)
   const [query, setQuery] = useState(DEFAULT_QUERY)
   const [lastQuery, setLastQuery] = useState('')
@@ -70,6 +76,12 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(readSidebarCollapsed)
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth)
+  const [resultsHeight, setResultsHeight] = useState(readResultsHeight)
+  const [tablePropertiesDialogOpen, setTablePropertiesDialogOpen] = useState(false)
+  const [tablePropertiesTarget, setTablePropertiesTarget] = useState<{
+    connectionId: string
+    table: TableInfo
+  } | null>(null)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark)
@@ -83,14 +95,19 @@ function App() {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
   }, [sidebarWidth])
 
-  const connectionsQuery = useQuery({
-    queryKey: ['connections'],
-    queryFn: listConnections,
-    staleTime: 30 * 1000,
+  useEffect(() => {
+    window.localStorage.setItem(RESULTS_HEIGHT_KEY, String(resultsHeight))
+  }, [resultsHeight])
+
+  const connectionsQuery = useConnectionsQuery()
+
+  const runQueryMutation = useRunQueryMutation({
+    onSuccess: (_result, variables) => {
+      setLastQuery(variables.sql)
+    },
   })
 
-  const connectMutation = useMutation({
-    mutationFn: connectDb,
+  const connectMutation = useConnectMutation({
     onSuccess: (nextConnection) => {
       setConnection(nextConnection)
       setSelectedTable(null)
@@ -98,44 +115,44 @@ function App() {
       setIsSidebarCollapsed(false)
       setConnectionDialogOpen(false)
       runQueryMutation.reset()
-      queryClient.setQueryData<ConnectionSummary[]>(['connections'], (current) => {
-        const existing = current ?? []
-        const filtered = existing.filter((item) => item.id !== nextConnection.id)
-        return [nextConnection, ...filtered]
-      })
+      setTablePropertiesDialogOpen(false)
+      setTablePropertiesTarget(null)
     },
   })
 
-  const runQueryMutation = useMutation({
-    mutationFn: runQuery,
-    onSuccess: (_result, variables) => {
-      setLastQuery(variables.sql)
-    },
-  })
-
-  const activateConnectionMutation = useMutation({
-    mutationFn: setActiveConnection,
+  const activateConnectionMutation = useActivateConnectionMutation({
     onSuccess: (nextConnection) => {
       setConnection(nextConnection)
       setSelectedTable(null)
       setTableSearch('')
       runQueryMutation.reset()
+      setTablePropertiesDialogOpen(false)
+      setTablePropertiesTarget(null)
     },
   })
 
-  const tablesQuery = useQuery({
-    queryKey: ['tables', connection?.id],
-    queryFn: () => getTables(connection?.id),
-    enabled: Boolean(connection?.id),
-    staleTime: 30 * 1000,
+  const tablesQuery = useTablesQuery(connection?.id)
+
+  const schemaQuery = useTableSchemaQuery({
+    connectionId: connection?.id,
+    table: selectedTable,
+    enabled: Boolean(connection?.id && selectedTable),
   })
 
-  const schemaQuery = useQuery({
-    queryKey: ['schema', connection?.id, selectedTable?.schema, selectedTable?.name],
-    queryFn: () => getSchema(connection?.id, selectedTable as TableInfo),
-    enabled: Boolean(connection?.id && selectedTable),
-    staleTime: 5 * 60 * 1000,
-  })
+  const connectionsErrorMessage =
+    connectionsQuery.error instanceof Error
+      ? connectionsQuery.error.message
+      : 'Failed to load saved connections'
+
+  const tablesErrorMessage =
+    tablesQuery.error instanceof Error
+      ? tablesQuery.error.message
+      : 'Failed to load tables'
+
+  const schemaErrorMessage =
+    schemaQuery.error instanceof Error
+      ? schemaQuery.error.message
+      : 'Failed to load table schema'
 
   const filteredTables = useMemo(() => {
     const source = tablesQuery.data ?? []
@@ -173,6 +190,11 @@ function App() {
     handleRunQuery(table.previewQuery)
   }
 
+  const handleOpenTableProperties = (connectionId: string, table: TableInfo) => {
+    setTablePropertiesTarget({ connectionId, table })
+    setTablePropertiesDialogOpen(true)
+  }
+
   const handleSelectConnection = (nextConnection: ConnectionSummary) => {
     if (connection?.id === nextConnection.id) {
       return
@@ -187,6 +209,35 @@ function App() {
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX))
+    }
+
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+  }
+
+  const resultsLayoutRef = useRef<HTMLDivElement | null>(null)
+
+  const clampResultsHeight = (value: number) => {
+    const containerHeight = resultsLayoutRef.current?.getBoundingClientRect().height
+    const maxResultsHeight = containerHeight
+      ? Math.max(MIN_RESULTS_HEIGHT, containerHeight - MIN_QUERY_HEIGHT - 8)
+      : Math.max(MIN_RESULTS_HEIGHT, window.innerHeight - MIN_QUERY_HEIGHT - 8)
+
+    return Math.min(maxResultsHeight, Math.max(MIN_RESULTS_HEIGHT, value))
+  }
+
+  const handleResultsResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const startY = event.clientY
+    const startHeight = resultsHeight
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaY = moveEvent.clientY - startY
+      setResultsHeight(clampResultsHeight(startHeight + deltaY))
     }
 
     const handlePointerUp = () => {
@@ -222,27 +273,43 @@ function App() {
   } as CSSProperties
 
   const connectionError = connectMutation.error ?? activateConnectionMutation.error
+  const connectionErrorMessage =
+    connectionError instanceof Error ? connectionError.message : 'Failed to connect'
+  const runQueryErrorMessage =
+    runQueryMutation.error instanceof Error ? runQueryMutation.error.message : 'Failed to run query'
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground" style={layoutStyle}>
       {!isSidebarCollapsed ? (
         <>
           <div className="min-w-0 shrink-0" style={{ width: 'var(--sidebar-width)' }}>
-            <ConnectionsSidebarTree
-              activeConnection={connection}
-              connections={connectionsQuery.data ?? []}
-              tables={filteredTables}
-              selectedTable={selectedTable}
-              search={tableSearch}
-              isConnectionsLoading={connectionsQuery.isLoading}
-              isTablesLoading={tablesQuery.isLoading}
-              isActivatingConnection={activateConnectionMutation.isPending}
-              onSearchChange={setTableSearch}
-              onOpenConnection={() => setConnectionDialogOpen(true)}
-              onSelectConnection={handleSelectConnection}
-              onSelectTable={handleSelectTable}
-              onToggleCollapsed={() => setIsSidebarCollapsed(true)}
-            />
+            <ErrorBoundary
+              fallback={
+                <div className="px-3 py-4 text-xs text-destructive">Sidebar failed to render.</div>
+              }
+            >
+              {connectionsQuery.isError ? (
+                <div className="px-3 py-4 text-xs text-destructive">{connectionsErrorMessage}</div>
+              ) : (
+                <ConnectionsSidebarTree
+                  activeConnection={connection}
+                  connections={connectionsQuery.data ?? []}
+                  tables={filteredTables}
+                  tablesErrorMessage={tablesQuery.isError ? tablesErrorMessage : undefined}
+                  selectedTable={selectedTable}
+                  search={tableSearch}
+                  isConnectionsLoading={connectionsQuery.isLoading}
+                  isTablesLoading={tablesQuery.isLoading}
+                  isActivatingConnection={activateConnectionMutation.isPending}
+                  onSearchChange={setTableSearch}
+                  onOpenConnection={() => setConnectionDialogOpen(true)}
+                  onSelectConnection={handleSelectConnection}
+                  onSelectTable={handleSelectTable}
+                  onOpenTableProperties={handleOpenTableProperties}
+                  onToggleCollapsed={() => setIsSidebarCollapsed(true)}
+                />
+              )}
+            </ErrorBoundary>
           </div>
           <div
             className="w-1 shrink-0 cursor-col-resize border-r border-border bg-muted/20 transition hover:bg-muted/60"
@@ -306,8 +373,8 @@ function App() {
           </div>
         </header>
 
-        <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_260px]">
-          <section className="min-h-0 border-b border-border">
+        <div ref={resultsLayoutRef} className="min-h-0 flex flex-col">
+          <section className="min-h-0 flex-1">
             <Tabs value="query-1" className="flex h-full flex-col gap-0">
               <div className="flex items-center justify-between border-b border-border px-3 py-2">
                 <TabsList variant="line">
@@ -329,7 +396,13 @@ function App() {
             </Tabs>
           </section>
 
-          <section className="min-h-0">
+          <div
+            className="h-1 cursor-row-resize border-y border-border bg-muted/10 hover:bg-muted/30"
+            onPointerDown={handleResultsResizeStart}
+            title="Resize results"
+          />
+
+          <section className="min-h-0 h-full overflow-hidden" style={{ height: `${resultsHeight}px` }}>
             <div className="flex items-center justify-between border-b border-border px-5 py-3">
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
@@ -343,7 +416,11 @@ function App() {
               </div>
 
               <div className="text-right text-xs text-muted-foreground">
-                {schemaQuery.data?.length ? (
+                {schemaQuery.isLoading ? (
+                  <span>Loading columns...</span>
+                ) : schemaQuery.isError ? (
+                  <span className="text-destructive">{schemaErrorMessage}</span>
+                ) : schemaQuery.data?.length ? (
                   <span>{schemaQuery.data.length} columns in selected table</span>
                 ) : (
                   <span>
@@ -355,10 +432,18 @@ function App() {
               </div>
             </div>
 
-            <ResultsGrid
-              result={runQueryMutation.data ?? null}
-              isPending={runQueryMutation.isPending}
-            />
+            <ErrorBoundary
+              fallback={
+                <div className="flex h-full items-center justify-center p-4 text-xs text-destructive">
+                  Results failed to render.
+                </div>
+              }
+            >
+              <ResultsGrid
+                result={runQueryMutation.data ?? null}
+                isPending={runQueryMutation.isPending}
+              />
+            </ErrorBoundary>
 
             {runQueryMutation.data?.truncated ? (
               <div className="border-t border-border bg-muted/20 px-5 py-2 text-xs text-muted-foreground">
@@ -368,13 +453,13 @@ function App() {
 
             {connectionError ? (
               <div className="border-t border-border bg-destructive/10 px-5 py-2 text-xs text-destructive">
-                {connectionError.message}
+                {connectionErrorMessage}
               </div>
             ) : null}
 
             {runQueryMutation.error ? (
               <div className="border-t border-border bg-destructive/10 px-5 py-2 text-xs text-destructive">
-                {runQueryMutation.error.message}
+                {runQueryErrorMessage}
               </div>
             ) : null}
           </section>
@@ -388,6 +473,16 @@ function App() {
           await connectMutation.mutateAsync(values)
         }}
         isPending={connectMutation.isPending}
+      />
+
+      <TablePropertiesDialog
+        open={tablePropertiesDialogOpen}
+        onOpenChange={(nextOpen) => {
+          setTablePropertiesDialogOpen(nextOpen)
+          if (!nextOpen) setTablePropertiesTarget(null)
+        }}
+        connectionId={tablePropertiesTarget?.connectionId}
+        table={tablePropertiesTarget?.table ?? null}
       />
 
       <CommandPalette

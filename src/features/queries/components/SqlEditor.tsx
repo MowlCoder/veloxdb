@@ -42,3 +42,4 @@ export function SqlEditor({ value, isDark, onChange, onRun }: SqlEditorProps) {
     />
   )
 }
+

@@ -83,6 +83,36 @@ pub struct ColumnInfo {
     pub is_nullable: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnProperties {
+    pub table_schema: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub data_type: String,
+    pub is_nullable: bool,
+    pub is_primary_key: bool,
+    pub is_unique: bool,
+    pub is_part_of_composite_unique: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnPropertiesUpdateInput {
+    pub column_name: String,
+    pub is_nullable: bool,
+    pub is_unique: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TablePropertiesApplyRequest {
+    pub connection_id: Option<String>,
+    pub table_schema: String,
+    pub table_name: String,
+    pub columns: Vec<ColumnPropertiesUpdateInput>,
+}
+
 impl StoredConnection {
     pub fn from_input(id: String, input: ConnectionInput) -> Self {
         Self {

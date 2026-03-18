@@ -3,8 +3,8 @@ mod db;
 mod models;
 
 use commands::{
-  connect_db, get_schema, get_tables, list_connections_command, run_query,
-  set_active_connection,
+  apply_table_properties, connect_db, get_schema, get_table_properties, get_tables,
+  list_connections_command, run_query, set_active_connection,
 };
 use db::AppState;
 
@@ -29,7 +29,9 @@ pub fn run() {
       set_active_connection,
       run_query,
       get_tables,
-      get_schema
+      get_schema,
+      get_table_properties,
+      apply_table_properties
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
