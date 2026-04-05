@@ -3,6 +3,7 @@ import { SpinnerGapIcon, CheckIcon, TrashIcon } from '@phosphor-icons/react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { ColumnProperties, TableInfo } from '@/data/types'
 import type {
   ColumnOverride,
@@ -135,6 +136,9 @@ export function ModelInspector({
 
   const columns = propertiesQuery.data ?? []
   const tk = tableKeyStr ?? '__none__'
+  const qualifiedTitle =
+    identityDraft != null ? `${identityDraft.schema.trim()}.${identityDraft.name.trim()}` : ''
+  const titleTooltip = tableKeyStr != null ? `Internal key: ${tk}` : undefined
 
   const draft = useMemo(() => {
     const base: Record<string, ColumnOverride> = {}
@@ -148,6 +152,8 @@ export function ModelInspector({
     () => pendingForeignKeys.filter((fk) => fk.fromKey === tableKeyStr),
     [pendingForeignKeys, tableKeyStr],
   )
+
+  const draftStagedCount = pendingAddColumns.length + pendingFksHere.length
 
   const existingColumnNames = useMemo(() => {
     const s = new Set<string>()
@@ -202,8 +208,13 @@ export function ModelInspector({
   return (
     <div className="flex h-full min-h-0 min-w-[280px] max-w-[380px] flex-col border-l border-border bg-background/50">
       <div className="shrink-0 space-y-2 border-b border-border px-3 py-2">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Inspector</p>
-        <p className="text-[10px] text-muted-foreground">Catalog id: {tk}</p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Table</p>
+        <p
+          className="truncate font-mono text-sm font-semibold text-foreground"
+          title={titleTooltip}
+        >
+          {qualifiedTitle || '—'}
+        </p>
 
         <div className="space-y-1.5">
           <label className="text-[10px] font-medium text-muted-foreground" htmlFor="model-inspector-schema">
@@ -262,275 +273,326 @@ export function ModelInspector({
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
-        <IndexInspectorSection
-          connectionId={connectionId}
-          table={table}
-          columnNames={columns.map((c) => c.columnName)}
-        />
-
-        <div className="mb-4 space-y-2 border-b border-border pb-4">
-          <p className="text-[10px] font-medium text-muted-foreground">Add column (pending)</p>
-          <p className="text-[10px] leading-snug text-muted-foreground">
-            Applied with <span className="font-medium text-foreground">Apply entire model</span> as{' '}
-            <code className="text-foreground/90">ALTER TABLE … ADD COLUMN</code>. Type is a PostgreSQL type
-            fragment (not quoted).
-          </p>
-          <div className="grid gap-2">
-            <Input
-              className="h-8 text-xs"
-              placeholder="Column name"
-              value={newColName}
-              onChange={(e) => setNewColName(e.target.value)}
-              spellCheck={false}
-            />
-            <Input
-              className="h-8 text-xs"
-              placeholder="Type, e.g. text, integer, timestamptz"
-              value={newColType}
-              onChange={(e) => setNewColType(e.target.value)}
-              spellCheck={false}
-            />
-            <Input
-              className="h-8 text-xs"
-              placeholder="DEFAULT expression (optional)"
-              value={newColDefault}
-              onChange={(e) => setNewColDefault(e.target.value)}
-              spellCheck={false}
-            />
-            <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
-              <ToggleButton checked={newColNullable} onClick={() => setNewColNullable((v) => !v)} />
-              Nullable
-            </label>
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 w-full text-xs"
-              disabled={!newColName.trim() || !newColType.trim() || existingColumnNames.has(newColName.trim())}
-              onClick={pushPendingColumn}
-            >
-              Queue column
-            </Button>
-          </div>
-          {pendingAddColumns.length > 0 ? (
-            <ul className="mt-2 space-y-1.5 text-[10px]">
-              {pendingAddColumns.map((p) => (
-                <li
-                  key={p.id}
-                  className="flex items-start justify-between gap-2 border border-border/60 bg-muted/20 px-2 py-1.5"
-                >
-                  <span className="min-w-0 break-all font-mono text-foreground/90">
-                    {p.columnName} {p.dataType}
-                    {!p.nullable ? ' NOT NULL' : ''}
-                    {p.defaultSql ? ` DEFAULT ${p.defaultSql}` : ''}
-                  </span>
-                  <button
-                    type="button"
-                    className="shrink-0 text-muted-foreground transition hover:text-destructive"
-                    aria-label={`Remove ${p.columnName}`}
-                    onClick={() => onPendingAddColumnsChange(pendingAddColumns.filter((x) => x.id !== p.id))}
-                  >
-                    <TrashIcon className="size-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+      <Tabs defaultValue="structure" className="flex min-h-0 flex-1 flex-col gap-0">
+        <div className="shrink-0 border-b border-border px-2 pt-1.5">
+          <TabsList variant="line" className="h-8 w-full min-w-0 justify-start gap-0">
+            <TabsTrigger value="structure" className="flex-1 text-xs">
+              Structure
+            </TabsTrigger>
+            <TabsTrigger value="draft" className="flex-1 text-xs">
+              <span className="flex items-center justify-center gap-1.5">
+                Draft
+                {draftStagedCount > 0 ? (
+                  <>
+                    <span
+                      className="min-w-4.5 rounded-full bg-primary/15 px-1 text-center text-[10px] font-medium tabular-nums text-primary"
+                      aria-hidden
+                    >
+                      {draftStagedCount}
+                    </span>
+                    <span className="sr-only">{draftStagedCount} staged</span>
+                  </>
+                ) : null}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="indexes" className="flex-1 text-xs">
+              Indexes
+            </TabsTrigger>
+          </TabsList>
         </div>
 
-        <div className="mb-4 space-y-2 border-b border-border pb-4">
-          <p className="text-[10px] font-medium text-muted-foreground">Add foreign key (pending)</p>
-          <p className="text-[10px] leading-snug text-muted-foreground">
-            Single-column FK. Runs as <code className="text-foreground/90">ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY</code>
-            .
-          </p>
-          <div className="grid gap-2">
-            <label className="text-[10px] text-muted-foreground" htmlFor="fk-from-col">
-              From column (this table)
-            </label>
-            <select
-              id="fk-from-col"
-              className={selectClass}
-              value={fkFromColumn}
-              onChange={(e) => setFkFromColumn(e.target.value)}
-            >
-              <option value="">Select column…</option>
-              {pendingAddColumns.map((p) => (
-                <option key={p.id} value={p.columnName.trim()}>
-                  {p.columnName} (pending)
-                </option>
-              ))}
-              {columns.map((c) => (
-                <option key={c.columnName} value={c.columnName}>
-                  {c.columnName}
-                </option>
-              ))}
-            </select>
-            <label className="text-[10px] text-muted-foreground" htmlFor="fk-to-table">
-              Referenced table
-            </label>
-            <select
-              id="fk-to-table"
-              className={selectClass}
-              value={fkToKey}
-              onChange={(e) => {
-                setFkToKey(e.target.value as TableKey)
-                setFkToColumn('')
-              }}
-            >
-              <option value="">Select table…</option>
-              {catalogTables.map((t) => {
-                const k = tableKey(t)
+        <TabsContent
+          value="structure"
+          className="m-0 min-h-0 flex-1 overflow-auto px-3 py-2 data-[state=inactive]:hidden"
+        >
+          {propertiesQuery.isLoading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
+              <SpinnerGapIcon className="size-4 animate-spin" />
+              Loading columns…
+            </div>
+          ) : null}
+
+          {propertiesQuery.isError ? (
+            <div className="py-3 text-xs text-destructive">
+              {propertiesQuery.error instanceof Error ? propertiesQuery.error.message : 'Failed to load'}
+            </div>
+          ) : null}
+
+          {propertiesQuery.isSuccess && columns.length === 0 ? (
+            <div className="py-3 text-xs text-muted-foreground">No columns.</div>
+          ) : null}
+
+          {propertiesQuery.isSuccess && columns.length > 0 ? (
+            <div className="divide-y divide-border">
+              <p className="pb-2 text-[10px] font-medium text-muted-foreground">Columns</p>
+              {columns.map((col) => {
+                const d = draft[col.columnName] ?? {
+                  isNullable: col.isNullable,
+                  isUnique: col.isUnique,
+                }
+                const uniqueDisabled = col.isPrimaryKey || col.isPartOfCompositeUnique
+                const nullableDisabled = col.isPrimaryKey
+                const hint = formatConstraintHint(col)
+
+                const patchOverride = (next: ColumnOverride) => {
+                  const matchesServer =
+                    next.isNullable === col.isNullable && next.isUnique === col.isUnique
+                  onColumnOverridesChange((() => {
+                    const prev = { ...columnOverrides }
+                    if (matchesServer) {
+                      delete prev[col.columnName]
+                    } else {
+                      prev[col.columnName] = next
+                    }
+                    return prev
+                  })())
+                }
+
                 return (
-                  <option key={k} value={k} disabled={k === tableKeyStr}>
-                    {k}
-                  </option>
+                  <div
+                    key={col.columnName}
+                    className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium">{col.columnName}</div>
+                      <div className="truncate text-[11px] text-muted-foreground">{col.dataType}</div>
+                      {hint ? <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div> : null}
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Null</span>
+                      <ToggleButton
+                        checked={d.isNullable}
+                        disabled={nullableDisabled}
+                        onClick={() =>
+                          patchOverride({ isNullable: !d.isNullable, isUnique: d.isUnique })
+                        }
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Unique</span>
+                      <ToggleButton
+                        checked={d.isUnique}
+                        disabled={uniqueDisabled}
+                        onClick={() =>
+                          patchOverride({ isNullable: d.isNullable, isUnique: !d.isUnique })
+                        }
+                      />
+                    </div>
+                  </div>
                 )
               })}
-            </select>
-            <label className="text-[10px] text-muted-foreground" htmlFor="fk-to-col">
-              Referenced column
-            </label>
-            <select
-              id="fk-to-col"
-              className={selectClass}
-              value={fkToColumn}
-              onChange={(e) => setFkToColumn(e.target.value)}
-              disabled={!fkToKey}
-            >
-              <option value="">Select column…</option>
-              {(fkTargetPropsQuery.data ?? []).map((c) => (
-                <option key={c.columnName} value={c.columnName}>
-                  {c.columnName}
-                </option>
-              ))}
-            </select>
-            <Input
-              className="h-8 text-xs"
-              placeholder="Constraint name (optional)"
-              value={fkConstraintName}
-              onChange={(e) => setFkConstraintName(e.target.value)}
-              spellCheck={false}
-            />
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 w-full text-xs"
-              disabled={!fkFromColumn || !fkToKey || !fkToColumn || fkToKey === tableKeyStr}
-              onClick={pushPendingFk}
-            >
-              Queue foreign key
-            </Button>
-          </div>
-          {pendingFksHere.length > 0 ? (
-            <ul className="mt-2 space-y-1.5 text-[10px]">
-              {pendingFksHere.map((fk) => (
-                <li
-                  key={fk.id}
-                  className="flex items-start justify-between gap-2 border border-border/60 bg-muted/20 px-2 py-1.5"
-                >
-                  <span className="min-w-0 break-all text-foreground/90">
-                    {fk.fromColumn} → {fk.toKey} ({fk.toColumn})
-                  </span>
-                  <button
-                    type="button"
-                    className="shrink-0 text-muted-foreground transition hover:text-destructive"
-                    aria-label="Remove foreign key"
-                    onClick={() => onRemovePendingForeignKey(fk.id)}
-                  >
-                    <TrashIcon className="size-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
+            </div>
           ) : null}
-        </div>
+        </TabsContent>
 
-        {propertiesQuery.isLoading ? (
-          <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-            <SpinnerGapIcon className="size-4 animate-spin" />
-            Loading columns…
+        <TabsContent
+          value="draft"
+          className="m-0 min-h-0 flex-1 overflow-auto px-3 py-2 data-[state=inactive]:hidden"
+        >
+          <div className="mb-4 rounded-md border border-border/80 bg-muted/20 px-2.5 py-2 text-[10px] leading-snug text-muted-foreground">
+            Staged items below are applied when you run{' '}
+            <span className="font-medium text-foreground">Apply entire model</span> in the diagram toolbar (with
+            schema/table renames and column null/unique overrides).
           </div>
-        ) : null}
 
-        {propertiesQuery.isError ? (
-          <div className="py-3 text-xs text-destructive">
-            {propertiesQuery.error instanceof Error ? propertiesQuery.error.message : 'Failed to load'}
+          <div className="mb-4 space-y-2 border-b border-border pb-4">
+            <p className="text-[10px] font-medium text-muted-foreground">Add column</p>
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              Emitted as <code className="text-foreground/90">ALTER TABLE … ADD COLUMN</code>. Type is a PostgreSQL
+              type fragment (not quoted).
+            </p>
+            <div className="grid gap-2">
+              <Input
+                className="h-8 text-xs"
+                placeholder="Column name"
+                value={newColName}
+                onChange={(e) => setNewColName(e.target.value)}
+                spellCheck={false}
+              />
+              <Input
+                className="h-8 text-xs"
+                placeholder="Type, e.g. text, integer, timestamptz"
+                value={newColType}
+                onChange={(e) => setNewColType(e.target.value)}
+                spellCheck={false}
+              />
+              <Input
+                className="h-8 text-xs"
+                placeholder="DEFAULT expression (optional)"
+                value={newColDefault}
+                onChange={(e) => setNewColDefault(e.target.value)}
+                spellCheck={false}
+              />
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <ToggleButton checked={newColNullable} onClick={() => setNewColNullable((v) => !v)} />
+                Nullable
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 w-full text-xs"
+                disabled={!newColName.trim() || !newColType.trim() || existingColumnNames.has(newColName.trim())}
+                onClick={pushPendingColumn}
+              >
+                Queue column
+              </Button>
+            </div>
+            {pendingAddColumns.length > 0 ? (
+              <ul className="mt-2 space-y-1.5 text-[10px]">
+                {pendingAddColumns.map((p) => (
+                  <li
+                    key={p.id}
+                    className="flex items-start justify-between gap-2 border border-border/60 bg-muted/20 px-2 py-1.5"
+                  >
+                    <span className="min-w-0 break-all font-mono text-foreground/90">
+                      {p.columnName} {p.dataType}
+                      {!p.nullable ? ' NOT NULL' : ''}
+                      {p.defaultSql ? ` DEFAULT ${p.defaultSql}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-muted-foreground transition hover:text-destructive"
+                      aria-label={`Remove ${p.columnName}`}
+                      onClick={() => onPendingAddColumnsChange(pendingAddColumns.filter((x) => x.id !== p.id))}
+                    >
+                      <TrashIcon className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
-        ) : null}
 
-        {propertiesQuery.isSuccess && columns.length === 0 ? (
-          <div className="py-3 text-xs text-muted-foreground">No columns.</div>
-        ) : null}
-
-        {propertiesQuery.isSuccess && columns.length > 0 ? (
-          <div className="divide-y divide-border">
-            <p className="pb-2 text-[10px] font-medium text-muted-foreground">Existing columns</p>
-            {columns.map((col) => {
-              const d = draft[col.columnName] ?? {
-                isNullable: col.isNullable,
-                isUnique: col.isUnique,
-              }
-              const uniqueDisabled = col.isPrimaryKey || col.isPartOfCompositeUnique
-              const nullableDisabled = col.isPrimaryKey
-              const hint = formatConstraintHint(col)
-
-              const patchOverride = (next: ColumnOverride) => {
-                const matchesServer =
-                  next.isNullable === col.isNullable && next.isUnique === col.isUnique
-                onColumnOverridesChange((() => {
-                  const prev = { ...columnOverrides }
-                  if (matchesServer) {
-                    delete prev[col.columnName]
-                  } else {
-                    prev[col.columnName] = next
-                  }
-                  return prev
-                })())
-              }
-
-              return (
-                <div
-                  key={col.columnName}
-                  className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-medium">{col.columnName}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">{col.dataType}</div>
-                    {hint ? <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div> : null}
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2">
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Null</span>
-                    <ToggleButton
-                      checked={d.isNullable}
-                      disabled={nullableDisabled}
-                      onClick={() =>
-                        patchOverride({ isNullable: !d.isNullable, isUnique: d.isUnique })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2">
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Unique</span>
-                    <ToggleButton
-                      checked={d.isUnique}
-                      disabled={uniqueDisabled}
-                      onClick={() =>
-                        patchOverride({ isNullable: d.isNullable, isUnique: !d.isUnique })
-                      }
-                    />
-                  </div>
-                </div>
-              )
-            })}
+          <div className="mb-4 space-y-2 border-b border-border pb-4">
+            <p className="text-[10px] font-medium text-muted-foreground">Add foreign key</p>
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              Single-column FK as{' '}
+              <code className="text-foreground/90">ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY</code>.
+            </p>
+            <div className="grid gap-2">
+              <label className="text-[10px] text-muted-foreground" htmlFor="fk-from-col">
+                From column (this table)
+              </label>
+              <select
+                id="fk-from-col"
+                className={selectClass}
+                value={fkFromColumn}
+                onChange={(e) => setFkFromColumn(e.target.value)}
+              >
+                <option value="">Select column…</option>
+                {pendingAddColumns.map((p) => (
+                  <option key={p.id} value={p.columnName.trim()}>
+                    {p.columnName} (pending)
+                  </option>
+                ))}
+                {columns.map((c) => (
+                  <option key={c.columnName} value={c.columnName}>
+                    {c.columnName}
+                  </option>
+                ))}
+              </select>
+              <label className="text-[10px] text-muted-foreground" htmlFor="fk-to-table">
+                Referenced table
+              </label>
+              <select
+                id="fk-to-table"
+                className={selectClass}
+                value={fkToKey}
+                onChange={(e) => {
+                  setFkToKey(e.target.value as TableKey)
+                  setFkToColumn('')
+                }}
+              >
+                <option value="">Select table…</option>
+                {catalogTables.map((t) => {
+                  const k = tableKey(t)
+                  return (
+                    <option key={k} value={k} disabled={k === tableKeyStr}>
+                      {k}
+                    </option>
+                  )
+                })}
+              </select>
+              <label className="text-[10px] text-muted-foreground" htmlFor="fk-to-col">
+                Referenced column
+              </label>
+              <select
+                id="fk-to-col"
+                className={selectClass}
+                value={fkToColumn}
+                onChange={(e) => setFkToColumn(e.target.value)}
+                disabled={!fkToKey}
+              >
+                <option value="">Select column…</option>
+                {(fkTargetPropsQuery.data ?? []).map((c) => (
+                  <option key={c.columnName} value={c.columnName}>
+                    {c.columnName}
+                  </option>
+                ))}
+              </select>
+              <Input
+                className="h-8 text-xs"
+                placeholder="Constraint name (optional)"
+                value={fkConstraintName}
+                onChange={(e) => setFkConstraintName(e.target.value)}
+                spellCheck={false}
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 w-full text-xs"
+                disabled={!fkFromColumn || !fkToKey || !fkToColumn || fkToKey === tableKeyStr}
+                onClick={pushPendingFk}
+              >
+                Queue foreign key
+              </Button>
+            </div>
+            {pendingFksHere.length > 0 ? (
+              <ul className="mt-2 space-y-1.5 text-[10px]">
+                {pendingFksHere.map((fk) => (
+                  <li
+                    key={fk.id}
+                    className="flex items-start justify-between gap-2 border border-border/60 bg-muted/20 px-2 py-1.5"
+                  >
+                    <span className="min-w-0 break-all text-foreground/90">
+                      {fk.fromColumn} → {fk.toKey} ({fk.toColumn})
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-muted-foreground transition hover:text-destructive"
+                      aria-label="Remove foreign key"
+                      onClick={() => onRemovePendingForeignKey(fk.id)}
+                    >
+                      <TrashIcon className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
-        ) : null}
-      </div>
+        </TabsContent>
+
+        <TabsContent
+          value="indexes"
+          className="m-0 min-h-0 flex-1 overflow-auto px-3 py-2 data-[state=inactive]:hidden"
+        >
+          <p className="mb-3 text-[10px] leading-snug text-muted-foreground">
+            Create and drop indexes run on the database immediately after you confirm in the dialog (not part of{' '}
+            <span className="font-medium text-foreground">Apply entire model</span>).
+          </p>
+          <IndexInspectorSection
+            connectionId={connectionId}
+            table={table}
+            columnNames={columns.map((c) => c.columnName)}
+          />
+        </TabsContent>
+      </Tabs>
 
       <div className="shrink-0 border-t border-border px-3 py-2 text-[10px] text-muted-foreground">
-        Use <span className="font-medium text-foreground">Apply entire model</span> in the toolbar to persist all
-        inspector changes, queued columns, and queued foreign keys.
+        Draft table changes and overrides: toolbar <span className="font-medium text-foreground">Apply entire model</span>
+        . Index DDL: confirm in the Indexes tab dialog.
       </div>
     </div>
   )

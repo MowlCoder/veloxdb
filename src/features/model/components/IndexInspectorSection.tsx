@@ -180,9 +180,8 @@ export function IndexInspectorSection({ connectionId, table, columnNames }: Inde
     <div className="mb-4 space-y-3 border-b border-border pb-4">
       <p className="text-[10px] font-medium text-muted-foreground">Indexes</p>
       <p className="text-[10px] leading-snug text-muted-foreground">
-        Usage stats come from <span className="font-mono text-foreground/80">pg_stat_user_indexes</span> (reset on
-        crash or stats reset). Create with <span className="font-medium text-foreground">CONCURRENTLY</span> runs
-        outside a transaction.
+        Usage stats reflect <span className="font-mono text-foreground/80">pg_stat_user_indexes</span> (can reset).
+        <span className="font-medium text-foreground"> CONCURRENTLY</span> builds run outside a transaction.
       </p>
 
       {indexesQuery.isLoading ? (
