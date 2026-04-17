@@ -1,22 +1,55 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use deadpool_postgres::{
-    Config as PostgresConfig, ManagerConfig, Pool, RecyclingMethod, Runtime,
+    Client, Config as PostgresConfig, ManagerConfig, Pool, PoolConfig, RecyclingMethod, Runtime,
+    SslMode as DeadpoolSslMode, Timeouts,
 };
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::RwLock;
 use tokio_postgres::NoTls;
 
-use crate::models::{ConnectionInput, ConnectionSummary, StoredConnection};
+use crate::models::{ConnectionInput, ConnectionSslMode, ConnectionSummary, StoredConnection};
 
 pub const CONNECTION_STORE_PATH: &str = "connections.json";
 pub const MAX_QUERY_ROWS: usize = 1000;
+
+const APP_NAME: &str = "VeloxDB";
+const CONNECT_TIMEOUT_SECS: u64 = 12;
+const KEEPALIVES_IDLE_SECS: u64 = 60;
+const POOL_MAX_SIZE: usize = 6;
+const POOL_WAIT_SECS: u64 = 30;
+const POOL_CREATE_SECS: u64 = 15;
+const POOL_RECYCLE_SECS: u64 = 15;
+
+fn deadpool_ssl_mode(mode: ConnectionSslMode) -> DeadpoolSslMode {
+    match mode {
+        ConnectionSslMode::Disable => DeadpoolSslMode::Disable,
+        ConnectionSslMode::Prefer => DeadpoolSslMode::Prefer,
+        ConnectionSslMode::Require => DeadpoolSslMode::Require,
+    }
+}
 
 #[derive(Default)]
 pub struct AppState {
     pub pools: RwLock<HashMap<String, Pool>>,
     pub active_connection_id: RwLock<Option<String>>,
+}
+
+fn tls_connector() -> Result<tokio_postgres_rustls::MakeRustlsConnect, String> {
+    static CACHE: OnceLock<Result<tokio_postgres_rustls::MakeRustlsConnect, String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
+        })
+        .clone()
 }
 
 pub fn build_pool(input: &ConnectionInput) -> Result<Pool, String> {
@@ -26,13 +59,105 @@ pub fn build_pool(input: &ConnectionInput) -> Result<Pool, String> {
     config.dbname = Some(input.database.clone());
     config.user = Some(input.user.clone());
     config.password = Some(input.password.clone());
+    config.application_name = Some(APP_NAME.to_string());
+    config.connect_timeout = Some(Duration::from_secs(CONNECT_TIMEOUT_SECS));
+    config.keepalives = Some(true);
+    config.keepalives_idle = Some(Duration::from_secs(KEEPALIVES_IDLE_SECS));
+    config.ssl_mode = Some(deadpool_ssl_mode(input.ssl_mode));
     config.manager = Some(ManagerConfig {
-        recycling_method: RecyclingMethod::Fast,
+        recycling_method: RecyclingMethod::Verified,
     });
 
-    config
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .map_err(|error| error.to_string())
+    let mut pool_config = PoolConfig::new(POOL_MAX_SIZE);
+    pool_config.timeouts = Timeouts {
+        wait: Some(Duration::from_secs(POOL_WAIT_SECS)),
+        create: Some(Duration::from_secs(POOL_CREATE_SECS)),
+        recycle: Some(Duration::from_secs(POOL_RECYCLE_SECS)),
+    };
+    config.pool = Some(pool_config);
+
+    match input.ssl_mode {
+        ConnectionSslMode::Disable => config
+            .create_pool(Some(Runtime::Tokio1), NoTls)
+            .map_err(|error| error.to_string()),
+        ConnectionSslMode::Prefer | ConnectionSslMode::Require => {
+            let tls = tls_connector()?;
+            config
+                .create_pool(Some(Runtime::Tokio1), tls)
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
+/// Heuristic for transport-level failures where discarding the pool and opening
+/// a new TCP session may succeed (sleep/VPN blips, idle disconnects).
+fn is_retryable_connection_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("broken pipe")
+        || m.contains("connection reset")
+        || m.contains("connection refused")
+        || m.contains("unexpected eof")
+        || m.contains("unexpected end of file")
+        || m.contains("error communicating with the server")
+        || m.contains("connection closed")
+        || m.contains("closed the connection")
+        || m.contains("server closed the connection")
+        || m.contains("eof has been reached")
+        || m.contains("could not receive data from server")
+        || m.contains("could not send data to server")
+        || m.contains("timeout occurred while waiting")
+        || m.contains("timeout occurred while creating")
+        || m.contains("timeout occurred while recycling")
+}
+
+pub async fn drop_pool(state: &AppState, connection_id: &str) {
+    state.pools.write().await.remove(connection_id);
+}
+
+/// Runs `operation` with a pooled client. On a retryable connection error, drops
+/// the cached pool once and retries the whole operation (at most one extra attempt).
+pub async fn with_pool_client_retry<T, C, F, Fut>(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    ctx: C,
+    mut operation: F,
+) -> Result<T, String>
+where
+    C: Clone + Send,
+    F: FnMut(Client, C) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send,
+{
+    let mut dropped_pool = false;
+
+    loop {
+        let pool = get_or_create_pool(app, state, connection_id).await?;
+        let client = match pool.get().await {
+            Ok(client) => client,
+            Err(error) => {
+                let message = error.to_string();
+                if !dropped_pool && is_retryable_connection_error(&message) {
+                    drop_pool(state, connection_id).await;
+                    dropped_pool = true;
+                    continue;
+                }
+                return Err(message);
+            }
+        };
+
+        match operation(client, ctx.clone()).await {
+            Ok(value) => return Ok(value),
+            Err(message) => {
+                if !dropped_pool && is_retryable_connection_error(&message) {
+                    drop_pool(state, connection_id).await;
+                    dropped_pool = true;
+                    continue;
+                }
+                return Err(message);
+            }
+        }
+    }
 }
 
 pub async fn resolve_connection_id(
@@ -71,6 +196,7 @@ pub async fn get_or_create_pool(
         database: stored_connection.database.clone(),
         user: stored_connection.user.clone(),
         password: stored_connection.password.clone(),
+        ssl_mode: stored_connection.ssl_mode,
     })?;
 
     state

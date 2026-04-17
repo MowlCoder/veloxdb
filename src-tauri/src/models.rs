@@ -2,6 +2,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+/// TLS behavior for PostgreSQL (`sslmode` style). Serialized as lowercase strings.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionSslMode {
+    /// No TLS (plain TCP).
+    Disable,
+    /// Try TLS first; fall back to plain if the server does not support SSL.
+    #[default]
+    Prefer,
+    /// Require TLS (typical for Neon and other hosted Postgres).
+    Require,
+}
+
+fn default_connection_ssl_mode() -> ConnectionSslMode {
+    ConnectionSslMode::Prefer
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInput {
@@ -12,6 +29,8 @@ pub struct ConnectionInput {
     pub database: String,
     pub user: String,
     pub password: String,
+    #[serde(default = "default_connection_ssl_mode")]
+    pub ssl_mode: ConnectionSslMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,9 +44,11 @@ pub struct StoredConnection {
     pub user: String,
     pub password: String,
     pub connected_at: String,
+    #[serde(default = "default_connection_ssl_mode")]
+    pub ssl_mode: ConnectionSslMode,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSummary {
     pub id: String,
@@ -37,6 +58,8 @@ pub struct ConnectionSummary {
     pub database: String,
     pub user: String,
     pub connected_at: String,
+    #[serde(default = "default_connection_ssl_mode")]
+    pub ssl_mode: ConnectionSslMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -176,6 +199,7 @@ impl StoredConnection {
             user: input.user,
             password: input.password,
             connected_at: timestamp_string(),
+            ssl_mode: input.ssl_mode,
         }
     }
 
@@ -188,6 +212,7 @@ impl StoredConnection {
             database: self.database.clone(),
             user: self.user.clone(),
             connected_at: self.connected_at.clone(),
+            ssl_mode: self.ssl_mode,
         }
     }
 }

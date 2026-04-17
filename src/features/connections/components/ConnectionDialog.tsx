@@ -14,6 +14,9 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import type { ConnectionInput } from '@/data/types'
+import { cn } from '@/lib/utils'
+
+const sslModeSchema = z.enum(['disable', 'prefer', 'require'])
 
 const connectionSchema = z.object({
   name: z.string().min(2, 'Enter a connection name.'),
@@ -22,6 +25,7 @@ const connectionSchema = z.object({
   database: z.string().min(1, 'Database is required.'),
   user: z.string().min(1, 'User is required.'),
   password: z.string().min(1, 'Password is required.'),
+  sslMode: sslModeSchema,
 })
 
 type ConnectionFormInput = z.input<typeof connectionSchema>
@@ -54,6 +58,11 @@ function Field({
   )
 }
 
+const selectClassName = cn(
+  'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors',
+  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+)
+
 export function ConnectionDialog({
   open,
   onOpenChange,
@@ -68,6 +77,7 @@ export function ConnectionDialog({
       database: 'postgres',
       user: 'postgres',
       password: '',
+      sslMode: 'prefer',
     }),
     [],
   )
@@ -140,6 +150,23 @@ export function ConnectionDialog({
             >
               <Input id="veloxdb-connection-password" {...form.register('password')} type="password" />
             </Field>
+
+            <Field
+              label="SSL mode"
+              inputId="veloxdb-connection-ssl-mode"
+              error={form.formState.errors.sslMode?.message}
+            >
+              <select id="veloxdb-connection-ssl-mode" className={selectClassName} {...form.register('sslMode')}>
+                <option value="disable">Disable (plain TCP)</option>
+                <option value="prefer">Prefer (try TLS; local Postgres)</option>
+                <option value="require">Require (Neon, hosted Postgres)</option>
+              </select>
+              <span className="block text-[11px] leading-snug text-muted-foreground/90 normal-case tracking-normal">
+                Use <strong className="font-medium text-foreground">Require</strong> for Neon and most cloud
+                providers. Use <strong className="font-medium text-foreground">Prefer</strong> for typical local
+                installs without SSL.
+              </span>
+            </Field>
           </div>
 
           <DialogFooter className="border-t border-border pt-4">
@@ -160,4 +187,3 @@ export function ConnectionDialog({
     </Dialog>
   )
 }
-

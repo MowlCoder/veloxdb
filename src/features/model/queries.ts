@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { queryKeys } from '@/data/query-keys'
 import { veloxDbRepository } from '@/data/repositories'
+import { shouldRetryTransientDbInvoke } from '@/lib/transient-invoke-retry'
 import type { DdlBatchRequest, DdlStatementRequest } from '@/data/types'
 
 export function useForeignKeysQuery(connectionId: string | undefined | null) {
@@ -25,6 +26,7 @@ export function useExecuteDdlTransactionMutation() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: (request: DdlBatchRequest) => veloxDbRepository.executeDdlTransaction(request),
     onSuccess: (_data, variables) => {
       invalidateSchemaQueries(queryClient, variables.connectionId)
@@ -36,6 +38,7 @@ export function useExecuteDdlStatementMutation() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: (request: DdlStatementRequest) => veloxDbRepository.executeDdlStatement(request),
     onSuccess: (_data, variables) => {
       invalidateSchemaQueries(queryClient, variables.connectionId)

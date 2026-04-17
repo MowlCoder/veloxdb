@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 
 import { veloxDbRepository } from '@/data/repositories'
+import { shouldRetryTransientDbInvoke } from '@/lib/transient-invoke-retry'
 import type { QueryRequest, QueryResult } from '@/data/types'
 import { buildUpdateStatements, type SaveResultEditsRequest } from '@/features/queries/result-edits'
 
@@ -10,6 +11,7 @@ type UseRunQueryMutationOptions = {
 
 export function useRunQueryMutation(options: UseRunQueryMutationOptions = {}) {
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: (request: QueryRequest) => veloxDbRepository.runQuery(request),
     onSuccess: (result, variables) => {
       options.onSuccess?.(result, variables)
@@ -24,6 +26,7 @@ type UseExplainPlanMutationOptions = {
 /** Runs EXPLAIN (ANALYZE, BUFFERS) unless the SQL already starts with EXPLAIN or PREPARE. */
 export function useExplainPlanMutation(options: UseExplainPlanMutationOptions = {}) {
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: ({ connectionId, sql }: { connectionId: string; sql: string }) => {
       const trimmed = sql.trim()
       const upper = trimmed.toUpperCase()
@@ -41,6 +44,7 @@ export function useExplainPlanMutation(options: UseExplainPlanMutationOptions = 
 
 export function useSaveResultEditsMutation() {
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: async (request: SaveResultEditsRequest) => {
       const statements = buildUpdateStatements(request)
 

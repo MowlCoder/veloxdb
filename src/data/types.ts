@@ -1,3 +1,6 @@
+/** PostgreSQL `sslmode`-style TLS (lowercase in JSON for Tauri). */
+export type ConnectionSslMode = 'disable' | 'prefer' | 'require'
+
 export type ConnectionInput = {
   id?: string
   name: string
@@ -6,6 +9,7 @@ export type ConnectionInput = {
   database: string
   user: string
   password: string
+  sslMode: ConnectionSslMode
 }
 
 export type ConnectionSummary = {
@@ -16,6 +20,7 @@ export type ConnectionSummary = {
   database: string
   user: string
   connectedAt: string
+  sslMode: ConnectionSslMode
 }
 
 export type QueryRequest = {

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { queryKeys } from '@/data/query-keys'
 import { veloxDbRepository } from '@/data/repositories'
+import { shouldRetryTransientDbInvoke } from '@/lib/transient-invoke-retry'
 import type { TableInfo, TablePropertiesApplyRequest } from '@/data/types'
 
 type UseTableIndexesQueryArgs = {
@@ -75,6 +76,7 @@ export function useApplyTablePropertiesMutation() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: (request: TablePropertiesApplyRequest) =>
       veloxDbRepository.applyTableProperties(request),
     onSuccess: (_data, variables) => {

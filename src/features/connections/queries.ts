@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { queryKeys } from '@/data/query-keys'
 import { veloxDbRepository } from '@/data/repositories'
+import { shouldRetryTransientDbInvoke } from '@/lib/transient-invoke-retry'
 import type { ConnectionInput, ConnectionSummary } from '@/data/types'
 
 export function useConnectionsQuery() {
@@ -39,6 +40,7 @@ export function useConnectMutation(options: UseConnectMutationOptions = {}) {
         database: input.database,
         user: input.user,
         connectedAt: new Date().toISOString(),
+        sslMode: input.sslMode,
       }
 
       queryClient.setQueryData<ConnectionSummary[]>(queryKeys.connections(), (current) => {
@@ -95,6 +97,7 @@ export function useActivateConnectionMutation(
   const queryClient = useQueryClient()
 
   return useMutation({
+    retry: shouldRetryTransientDbInvoke,
     mutationFn: (connectionId: string) =>
       veloxDbRepository.setActiveConnection(connectionId),
     onSuccess: (nextConnection) => {

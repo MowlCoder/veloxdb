@@ -6,9 +6,8 @@ use tokio_postgres::SimpleQueryMessage;
 use uuid::Uuid;
 
 use crate::db::{
-    build_pool, get_or_create_pool, list_connections, load_connection,
-    persist_connection, quote_identifier, resolve_connection_id, AppState,
-    MAX_QUERY_ROWS,
+    build_pool, list_connections, load_connection, persist_connection, quote_identifier,
+    resolve_connection_id, with_pool_client_retry, AppState, MAX_QUERY_ROWS,
 };
 use crate::models::{
     ColumnInfo, ColumnProperties, ConnectionInput, ConnectionSummary, DdlBatchRequest,
@@ -67,13 +66,15 @@ pub async fn set_active_connection(
 ) -> Result<ConnectionSummary, String> {
     let stored_connection = load_connection(&app, &connection_id)?
         .ok_or_else(|| "Stored connection details were not found.".to_string())?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
 
-    client
-        .simple_query("select 1")
-        .await
-        .map_err(|error| error.to_string())?;
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        client
+            .simple_query("select 1")
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await?;
 
     *state.active_connection_id.write().await = Some(connection_id);
 
@@ -87,72 +88,72 @@ pub async fn run_query(
     input: QueryRequest,
 ) -> Result<QueryResult, String> {
     let connection_id = resolve_connection_id(&state, input.connection_id).await?;
-    let sql = input.sql.trim();
+    let sql = input.sql.trim().to_string();
 
     if sql.is_empty() {
         return Err("Enter a SQL statement before running the query.".to_string());
     }
 
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
+    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+        let started_at = Instant::now();
+        let messages = client
+            .simple_query(&sql)
+            .await
+            .map_err(|error| error.to_string())?;
 
-    let started_at = Instant::now();
-    let messages = client
-        .simple_query(sql)
-        .await
-        .map_err(|error| error.to_string())?;
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        let mut total_rows = 0usize;
+        let mut command_tag = None;
 
-    let mut columns = Vec::new();
-    let mut rows = Vec::new();
-    let mut total_rows = 0usize;
-    let mut command_tag = None;
-
-    for message in messages {
-        match message {
-            SimpleQueryMessage::RowDescription(description) => {
-                if columns.is_empty() {
-                    columns = description
-                        .iter()
-                        .map(|column| column.name().to_string())
-                        .collect();
+        for message in messages {
+            match message {
+                SimpleQueryMessage::RowDescription(description) => {
+                    if columns.is_empty() {
+                        columns = description
+                            .iter()
+                            .map(|column| column.name().to_string())
+                            .collect();
+                    }
                 }
+                SimpleQueryMessage::Row(row) => {
+                    total_rows += 1;
+
+                    if columns.is_empty() {
+                        columns = row
+                            .columns()
+                            .iter()
+                            .map(|column| column.name().to_string())
+                            .collect();
+                    }
+
+                    if rows.len() >= MAX_QUERY_ROWS {
+                        continue;
+                    }
+
+                    let mut mapped_row = BTreeMap::new();
+                    for (index, column_name) in columns.iter().enumerate() {
+                        mapped_row.insert(column_name.clone(), row.get(index).map(str::to_owned));
+                    }
+                    rows.push(mapped_row);
+                }
+                SimpleQueryMessage::CommandComplete(count) => {
+                    command_tag = Some(count);
+                }
+                _ => {}
             }
-            SimpleQueryMessage::Row(row) => {
-                total_rows += 1;
-
-                if columns.is_empty() {
-                    columns = row
-                        .columns()
-                        .iter()
-                        .map(|column| column.name().to_string())
-                        .collect();
-                }
-
-                if rows.len() >= MAX_QUERY_ROWS {
-                    continue;
-                }
-
-                let mut mapped_row = BTreeMap::new();
-                for (index, column_name) in columns.iter().enumerate() {
-                    mapped_row.insert(column_name.clone(), row.get(index).map(str::to_owned));
-                }
-                rows.push(mapped_row);
-            }
-            SimpleQueryMessage::CommandComplete(count) => {
-                command_tag = Some(count);
-            }
-            _ => {}
         }
-    }
 
-    Ok(QueryResult {
-        columns,
-        row_count: rows.len(),
-        rows,
-        execution_ms: started_at.elapsed().as_millis(),
-        truncated: total_rows > MAX_QUERY_ROWS,
-        command_tag,
+        Ok(QueryResult {
+            columns,
+            row_count: rows.len(),
+            rows,
+            execution_ms: started_at.elapsed().as_millis(),
+            truncated: total_rows > MAX_QUERY_ROWS,
+            command_tag,
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -162,41 +163,42 @@ pub async fn get_tables(
     connection_id: Option<String>,
 ) -> Result<Vec<TableInfo>, String> {
     let connection_id = resolve_connection_id(&state, connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
 
-    let rows = client
-        .query(
-            "
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        let rows = client
+            .query(
+                "
             select table_schema, table_name
             from information_schema.tables
             where table_type = 'BASE TABLE'
               and table_schema not in ('pg_catalog', 'information_schema')
             order by table_schema, table_name
             ",
-            &[],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+                &[],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let schema: String = row.get(0);
-            let name: String = row.get(1);
-            let preview_query = format!(
-                "select * from \"{}\".\"{}\" limit 100;",
-                quote_identifier(&schema),
-                quote_identifier(&name)
-            );
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let schema: String = row.get(0);
+                let name: String = row.get(1);
+                let preview_query = format!(
+                    "select * from \"{}\".\"{}\" limit 100;",
+                    quote_identifier(&schema),
+                    quote_identifier(&name)
+                );
 
-            TableInfo {
-                schema,
-                name,
-                preview_query,
-            }
-        })
-        .collect())
+                TableInfo {
+                    schema,
+                    name,
+                    preview_query,
+                }
+            })
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -205,33 +207,41 @@ pub async fn get_schema(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let schema_request = input.clone();
 
-    let rows = client
-        .query(
-            "
+    with_pool_client_retry(
+        &app,
+        &state,
+        &connection_id,
+        schema_request,
+        |client, input| async move {
+            let rows = client
+                .query(
+                    "
             select table_schema, table_name, column_name, data_type, is_nullable
             from information_schema.columns
             where table_schema = $1 and table_name = $2
             order by ordinal_position
             ",
-            &[&input.table_schema, &input.table_name],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+                    &[&input.table_schema, &input.table_name],
+                )
+                .await
+                .map_err(|error| error.to_string())?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| ColumnInfo {
-            table_schema: row.get(0),
-            table_name: row.get(1),
-            column_name: row.get(2),
-            data_type: row.get(3),
-            is_nullable: row.get::<_, String>(4) == "YES",
-        })
-        .collect())
+            Ok(rows
+                .into_iter()
+                .map(|row| ColumnInfo {
+                    table_schema: row.get(0),
+                    table_name: row.get(1),
+                    column_name: row.get(2),
+                    data_type: row.get(3),
+                    is_nullable: row.get::<_, String>(4) == "YES",
+                })
+                .collect())
+        },
+    )
+    .await
 }
 
 fn veloxdb_unique_constraint_name(table_name: &str, column_name: &str) -> String {
@@ -252,11 +262,11 @@ pub async fn get_table_properties(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<Vec<ColumnProperties>, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let ctx = input.clone();
 
-    let columns = client
+    with_pool_client_retry(&app, &state, &connection_id, ctx, |client, input| async move {
+        let columns = client
         .query(
             "
             select table_schema, table_name, column_name, data_type, is_nullable
@@ -356,6 +366,8 @@ pub async fn get_table_properties(
             }
         })
         .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -364,18 +376,14 @@ pub async fn apply_table_properties(
     state: State<'_, AppState>,
     input: TablePropertiesApplyRequest,
 ) -> Result<(), String> {
-    let TablePropertiesApplyRequest {
-        connection_id: requested_connection_id,
-        table_schema,
-        table_name,
-        columns,
-    } = input;
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
 
-    let connection_id = resolve_connection_id(&state, requested_connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let mut client = pool.get().await.map_err(|error| error.to_string())?;
+    with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
+        let table_schema = input.table_schema;
+        let table_name = input.table_name;
+        let columns = input.columns;
 
-    let current_columns = client
+        let current_columns = client
         .query(
             "
             select column_name, is_nullable
@@ -581,8 +589,10 @@ pub async fn apply_table_properties(
         }
     }
 
-    txn.commit().await.map_err(|error| error.to_string())?;
-    Ok(())
+        txn.commit().await.map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -592,12 +602,11 @@ pub async fn get_foreign_keys(
     connection_id: Option<String>,
 ) -> Result<Vec<ForeignKeyEdge>, String> {
     let connection_id = resolve_connection_id(&state, connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
 
-    let rows = client
-        .query(
-            "
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        let rows = client
+            .query(
+                "
             select
               src_ns.nspname::text as from_schema,
               src_cls.relname::text as from_table,
@@ -624,22 +633,24 @@ pub async fn get_foreign_keys(
             order by src_ns.nspname, src_cls.relname, c.conname, u.attnum
             limit $1
             ",
-            &[&MAX_FOREIGN_KEY_ROWS],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+                &[&MAX_FOREIGN_KEY_ROWS],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| ForeignKeyEdge {
-            from_schema: row.get(0),
-            from_table: row.get(1),
-            from_column: row.get(2),
-            to_schema: row.get(3),
-            to_table: row.get(4),
-            to_column: row.get(5),
-        })
-        .collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| ForeignKeyEdge {
+                from_schema: row.get(0),
+                from_table: row.get(1),
+                from_column: row.get(2),
+                to_schema: row.get(3),
+                to_table: row.get(4),
+                to_column: row.get(5),
+            })
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -648,17 +659,17 @@ pub async fn get_table_indexes(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<TableIndexesResult, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let ctx = input.clone();
 
-    let table_schema = input.table_schema;
-    let table_name = input.table_name;
-    let fetch_limit = MAX_TABLE_INDEX_ROWS + 1;
+    with_pool_client_retry(&app, &state, &connection_id, ctx, |client, input| async move {
+        let table_schema = input.table_schema;
+        let table_name = input.table_name;
+        let fetch_limit = MAX_TABLE_INDEX_ROWS + 1;
 
-    let rows = client
-        .query(
-            "
+        let rows = client
+            .query(
+                "
             select
               ins.nspname::text as index_schema,
               ic.relname::text as index_name,
@@ -685,38 +696,40 @@ pub async fn get_table_indexes(
             order by ic.relname
             limit $3
             ",
-            &[&table_schema, &table_name, &fetch_limit],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+                &[&table_schema, &table_name, &fetch_limit],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
-    let truncated = rows.len() as i64 > MAX_TABLE_INDEX_ROWS;
-    let take = if truncated {
-        MAX_TABLE_INDEX_ROWS as usize
-    } else {
-        rows.len()
-    };
+        let truncated = rows.len() as i64 > MAX_TABLE_INDEX_ROWS;
+        let take = if truncated {
+            MAX_TABLE_INDEX_ROWS as usize
+        } else {
+            rows.len()
+        };
 
-    let mut indexes = Vec::with_capacity(take);
-    for row in rows.into_iter().take(take) {
-        indexes.push(IndexInfo {
-            index_schema: row.get(0),
-            index_name: row.get(1),
-            table_schema: row.get(2),
-            table_name: row.get(3),
-            is_unique: row.get(4),
-            is_primary: row.get(5),
-            is_valid: row.get(6),
-            is_partial: row.get(7),
-            definition: row.get(8),
-            index_bytes: row.get(9),
-            idx_scan: row.get(10),
-            idx_tup_read: row.get(11),
-            idx_tup_fetch: row.get(12),
-        });
-    }
+        let mut indexes = Vec::with_capacity(take);
+        for row in rows.into_iter().take(take) {
+            indexes.push(IndexInfo {
+                index_schema: row.get(0),
+                index_name: row.get(1),
+                table_schema: row.get(2),
+                table_name: row.get(3),
+                is_unique: row.get(4),
+                is_primary: row.get(5),
+                is_valid: row.get(6),
+                is_partial: row.get(7),
+                definition: row.get(8),
+                index_bytes: row.get(9),
+                idx_scan: row.get(10),
+                idx_tup_read: row.get(11),
+                idx_tup_fetch: row.get(12),
+            });
+        }
 
-    Ok(TableIndexesResult { indexes, truncated })
+        Ok(TableIndexesResult { indexes, truncated })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -725,33 +738,30 @@ pub async fn execute_ddl_transaction(
     state: State<'_, AppState>,
     input: DdlBatchRequest,
 ) -> Result<(), String> {
-    let DdlBatchRequest {
-        connection_id: requested_connection_id,
-        statements,
-    } = input;
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
 
-    let connection_id = resolve_connection_id(&state, requested_connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let mut client = pool.get().await.map_err(|error| error.to_string())?;
+    with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
+        let stmts: Vec<String> = input
+            .statements
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
-    let stmts: Vec<String> = statements
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+        if stmts.is_empty() {
+            return Err("No SQL statements to execute.".to_string());
+        }
 
-    if stmts.is_empty() {
-        return Err("No SQL statements to execute.".to_string());
-    }
-
-    let txn = client.transaction().await.map_err(|error| error.to_string())?;
-    for sql in &stmts {
-        txn.execute(sql.as_str(), &[])
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    txn.commit().await.map_err(|error| error.to_string())?;
-    Ok(())
+        let txn = client.transaction().await.map_err(|error| error.to_string())?;
+        for sql in &stmts {
+            txn.execute(sql.as_str(), &[])
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        txn.commit().await.map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 /// Run a single DDL statement outside an explicit transaction (required for `CREATE INDEX CONCURRENTLY`).
@@ -761,18 +771,18 @@ pub async fn execute_ddl_statement(
     state: State<'_, AppState>,
     input: DdlStatementRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id).await?;
-    let pool = get_or_create_pool(&app, &state, &connection_id).await?;
-    let client = pool.get().await.map_err(|error| error.to_string())?;
-
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
     let sql = input.statement.trim().to_string();
     if sql.is_empty() {
         return Err("No SQL statement to execute.".to_string());
     }
 
-    client
-        .execute(sql.as_str(), &[])
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+        client
+            .execute(sql.as_str(), &[])
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }

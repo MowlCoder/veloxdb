@@ -5,7 +5,7 @@ import type { KonvaEventObject } from 'konva/lib/Node'
 import type { ColumnInfo } from '@/data/types'
 import type { KonvaPalette } from '@/features/model/konva-theme'
 import { TABLE_NODE_WIDTH, tableNodeHeight } from '@/features/model/table-node-metrics'
-import { contrastMutedForBg, contrastTextForBg } from '@/lib/contrast-text-for-bg'
+import { contrastTextForBg } from '@/lib/contrast-text-for-bg'
 import type { DiagramTool } from '@/features/model/use-diagram-interaction'
 
 const NODE_WIDTH = TABLE_NODE_WIDTH
@@ -69,7 +69,7 @@ function TableNodeInner({
 
   const bandHeaderFill = headerFill ?? palette.header
   const headerNameFill = headerFill ? contrastTextForBg(headerFill) : palette.foreground
-  const headerSchemaFill = headerFill ? contrastMutedForBg(headerFill) : palette.mutedForeground
+  const headerTitle = useMemo(() => `${name} (${schema})`, [name, schema])
 
   const draggable = !spaceHeld && diagramTool === 'select'
   const showConnectColumns = diagramTool === 'connect' && columns != null && columns.length > 0
@@ -136,30 +136,18 @@ function TableNodeInner({
         shadowBlur={selected ? 10 : 8}
         shadowOffset={{ x: 0, y: selected ? 3 : 2 }}
         shadowOpacity={1}
-        listening={false}
+        listening
         perfectDrawEnabled={false}
       />
       <Text
         x={PAD}
-        y={11}
+        y={12}
         width={NODE_WIDTH - PAD * 2}
-        text={name}
+        text={headerTitle}
         fontSize={13}
         fontStyle="bold"
         fontFamily="system-ui, -apple-system, Segoe UI, sans-serif"
         fill={headerNameFill}
-        listening={false}
-        perfectDrawEnabled={false}
-        ellipsis
-      />
-      <Text
-        x={PAD}
-        y={28}
-        width={NODE_WIDTH - PAD * 2}
-        text={schema}
-        fontSize={11}
-        fontFamily="system-ui, -apple-system, Segoe UI, sans-serif"
-        fill={headerSchemaFill}
         listening={false}
         perfectDrawEnabled={false}
         ellipsis
