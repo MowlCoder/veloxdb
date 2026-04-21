@@ -74,6 +74,10 @@ function toEditableValue(value: string | null | undefined) {
 	return value ?? "";
 }
 
+function normalizeColumnId(columnId: string) {
+	return columnId.toLowerCase();
+}
+
 function ResultEditInput({
 	defaultValue,
 	onBlurCommit,
@@ -285,12 +289,25 @@ export function ResultsGrid({
 		result != null
 			? `${result.executionMs}\u0000${result.rowCount}\u0000${columnsFingerprint}`
 			: "";
-	const editableColumnSet = useMemo(
-		() => new Set(editableColumns),
+	const resultColumnByLower = useMemo(
+		() =>
+			new Map(
+				columns.map((columnName) => [normalizeColumnId(columnName), columnName]),
+			),
+		[columns],
+	);
+	const editableColumnsByLower = useMemo(
+		() =>
+			new Map(
+				editableColumns.map((columnName) => [
+					normalizeColumnId(columnName),
+					columnName,
+				]),
+			),
 		[editableColumns],
 	);
-	const primaryKeySet = useMemo(
-		() => new Set(primaryKeyColumns),
+	const primaryKeyColumnsByLower = useMemo(
+		() => new Set(primaryKeyColumns.map((columnName) => normalizeColumnId(columnName))),
 		[primaryKeyColumns],
 	);
 
@@ -310,18 +327,33 @@ export function ResultsGrid({
 		if (!propertiesQuery.data) {
 			return [];
 		}
+		const resultColumnNames = new Set(
+			columns.map((columnName) => normalizeColumnId(columnName)),
+		);
 		return propertiesQuery.data
 			.filter(isInsertFormColumn)
-			.filter((col) => columns.includes(col.columnName));
+			.filter((col) =>
+				resultColumnNames.has(normalizeColumnId(col.columnName)),
+			);
 	}, [propertiesQuery.data, columns]);
 
-	const metaByName = useMemo(() => {
+	const metaByLowerName = useMemo(() => {
 		const map = new Map<string, ColumnProperties>();
 		for (const col of propertiesQuery.data ?? []) {
-			map.set(col.columnName, col);
+			map.set(normalizeColumnId(col.columnName), col);
 		}
 		return map;
 	}, [propertiesQuery.data]);
+	const insertBindingByResultColumn = useMemo(() => {
+		const map = new Map<string, string>();
+		for (const resultColumnName of columns) {
+			const mapped = metaByLowerName.get(normalizeColumnId(resultColumnName));
+			if (mapped && isInsertFormColumn(mapped)) {
+				map.set(resultColumnName, mapped.columnName);
+			}
+		}
+		return map;
+	}, [columns, metaByLowerName]);
 
 	const insertPlaceholderRow = useMemo(() => {
 		const row: ResultRow = {};
@@ -335,7 +367,11 @@ export function ResultsGrid({
 		const rows = result?.rows ?? [];
 		return rows.map((row, index) => {
 			const pkValues = primaryKeyColumns.map(
-				(columnName) => row[columnName] ?? null,
+				(columnName) => {
+					const resolvedColumnName =
+						resultColumnByLower.get(normalizeColumnId(columnName)) ?? columnName;
+					return row[resolvedColumnName] ?? null;
+				},
 			);
 			const hasCompletePrimaryKey =
 				primaryKeyColumns.length > 0 &&
@@ -347,7 +383,9 @@ export function ResultsGrid({
 			const primaryKey = primaryKeyColumns.reduce<
 				Record<string, string | null>
 			>((accumulator, columnName) => {
-				accumulator[columnName] = row[columnName] ?? null;
+				const resolvedColumnName =
+					resultColumnByLower.get(normalizeColumnId(columnName)) ?? columnName;
+				accumulator[columnName] = row[resolvedColumnName] ?? null;
 				return accumulator;
 			}, {});
 
@@ -358,7 +396,7 @@ export function ResultsGrid({
 				hasCompletePrimaryKey,
 			};
 		});
-	}, [primaryKeyColumns, result?.rows]);
+	}, [primaryKeyColumns, result?.rows, resultColumnByLower]);
 
 	const originalByRowId = useMemo(
 		() =>
@@ -422,26 +460,28 @@ export function ResultsGrid({
 						const value = context.getValue();
 						const isCellEditing =
 							editingCell?.rowId === rowId && editingCell.columnId === columnId;
+						const normalizedColumnId = normalizeColumnId(columnId);
 						const isColumnEditable =
 							canEdit &&
-							editableColumnSet.has(columnId) &&
-							!primaryKeySet.has(columnId);
+							editableColumnsByLower.has(normalizedColumnId) &&
+							!primaryKeyColumnsByLower.has(normalizedColumnId);
 
 						if (rowId === "__insert__") {
-							const insertable = columnsForInsert.some(
-								(col) => col.columnName === columnId,
-							);
-							const meta = metaByName.get(columnId);
-							if (!insertable || !meta) {
+							const mappedInsertColumn =
+								insertBindingByResultColumn.get(columnId);
+							const meta = mappedInsertColumn
+								? metaByLowerName.get(normalizeColumnId(mappedInsertColumn))
+								: undefined;
+							if (!mappedInsertColumn || !meta) {
 								return <span className="text-muted-foreground">—</span>;
 							}
 							return (
 								<InsertRowInput
-									value={insertDraft[columnId] ?? ""}
+									value={insertDraft[mappedInsertColumn] ?? ""}
 									onChange={(next) =>
 										setInsertDraft((previous) => ({
 											...previous,
-											[columnId]: next,
+											[mappedInsertColumn]: next,
 										}))
 									}
 									placeholder={meta.isNullable ? "NULL if empty" : "Required"}
@@ -511,13 +551,13 @@ export function ResultsGrid({
 			canEdit,
 			columnHelper,
 			columns,
-			columnsForInsert,
-			editableColumnSet,
+			editableColumnsByLower,
 			editingCell,
+			insertBindingByResultColumn,
 			insertDraft,
-			metaByName,
+			metaByLowerName,
 			originalByRowId,
-			primaryKeySet,
+			primaryKeyColumnsByLower,
 		],
 	);
 
@@ -604,7 +644,7 @@ export function ResultsGrid({
 		return formatValue(cell.getValue() as string | null);
 	}, []);
 
-	const hasEdits = Object.keys(pendingEdits).length > 0;
+	const hasEdits = Object.keys(pendingEdits).length > 0 || editingCell !== null;
 
 	useEffect(() => {
 		setColumnWidths((previous) => {
@@ -629,8 +669,7 @@ export function ResultsGrid({
 		setGridError(null);
 		setShowInsertRow(false);
 		setInsertDraft({});
-		insertMutation.reset();
-	}, [queryResultEditResetKey, insertMutation]);
+	}, [queryResultEditResetKey]);
 
 	useEffect(() => {
 		if (!canInsertRow) {
@@ -673,14 +712,32 @@ export function ResultsGrid({
 			);
 			return;
 		}
+		if (editingCell) {
+			const activeElement = document.activeElement;
+			if (activeElement instanceof HTMLElement) {
+				activeElement.blur();
+			}
+			await Promise.resolve();
+		}
 
 		const patches: ResultEditPatch[] = Object.entries(pendingEdits)
 			.map(([rowId, changes]) => {
 				const source = indexedRows.find((row) => row.rowId === rowId);
+				const mappedChanges = Object.entries(changes).reduce<
+					Record<string, string | null>
+				>((accumulator, [columnId, value]) => {
+					const mappedColumnName = editableColumnsByLower.get(
+						normalizeColumnId(columnId),
+					);
+					if (mappedColumnName) {
+						accumulator[mappedColumnName] = value;
+					}
+					return accumulator;
+				}, {});
 				if (
 					!source ||
 					!source.hasCompletePrimaryKey ||
-					Object.keys(changes).length === 0
+					Object.keys(mappedChanges).length === 0
 				) {
 					return null;
 				}
@@ -688,7 +745,7 @@ export function ResultsGrid({
 				return {
 					rowId,
 					primaryKey: source.primaryKey,
-					changes,
+					changes: mappedChanges,
 				};
 			})
 			.filter((patch): patch is ResultEditPatch => patch !== null);
