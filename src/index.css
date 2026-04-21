@@ -42,7 +42,7 @@
   /* Checkboxes, toggles, and other small controls (subtle hue, not full “rainbow” UI) */
   --control-accent: oklch(0.5 0.14 262);
   --control-accent-muted: oklch(0.5 0.14 262 / 14%);
-  /* ER diagram table node header (Konva); distinct from card body */
+  /* ER diagram table node header; distinct from card body */
   --diagram-table-header: oklch(0.94 0.02 262);
 }
 

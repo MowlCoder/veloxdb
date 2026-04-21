@@ -18,7 +18,7 @@ function unionAabbs(boxes: Aabb[]): Aabb | null {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
 }
 
-/** Padded world-space frame around all tables in the group (for Konva overlay). */
+/** Padded world-space frame around all tables in the group. */
 export function diagramGroupWorldBounds(
   group: DiagramGroup,
   positions: Record<TableKey, { x: number; y: number }>,

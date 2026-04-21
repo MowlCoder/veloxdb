@@ -1,4 +1,3 @@
-import type { Stage as KonvaStage } from 'konva/lib/Stage'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import {
   AlignBottomIcon,
@@ -35,8 +34,8 @@ import {
   type TableIdentityDraft,
 } from '@/features/model/apply-entire-model'
 import { DdlReviewDialog } from '@/features/model/components/DdlReviewDialog'
-import { DiagramCanvas } from '@/features/model/components/DiagramCanvas'
-import { DiagramMinimap } from '@/features/model/components/DiagramMinimap'
+import { DiagramSurfaceAdapter } from '@/features/model/components/DiagramSurfaceAdapter'
+import type { DiagramExportHandle } from '@/features/model/components/diagram-surface-types'
 import { ModelCatalog } from '@/features/model/components/ModelCatalog'
 import { ModelInspector } from '@/features/model/components/ModelInspector'
 import {
@@ -59,7 +58,7 @@ import {
 } from '@/features/model/model-layout-storage'
 import { defaultDiagramHeaderHex as distinctDiagramHeaderHex } from '@/features/model/diagram-header-palette'
 import { TABLE_NODE_WIDTH, tableNodeHeight } from '@/features/model/table-node-metrics'
-import { readKonvaPalette } from '@/features/model/konva-theme'
+import { readDiagramPalette } from '@/features/model/diagram-theme'
 import {
   DEFAULT_DIAGRAM_VIEW_ID,
   tableKey,
@@ -230,7 +229,7 @@ export function ModelWorkspace({
     }),
   })
 
-  const diagramPalette = useMemo(() => readKonvaPalette(isDark), [isDark])
+  const diagramPalette = useMemo(() => readDiagramPalette(isDark), [isDark])
   const themeDiagramHeaderHex = useMemo(
     () => rgbCssToHex(diagramPalette.header),
     [diagramPalette.header],
@@ -405,7 +404,7 @@ export function ModelWorkspace({
     start: Record<TableKey, { x: number; y: number }>
   }
   const tableDragStateRef = useRef<TableDragState | null>(null)
-  const diagramStageRef = useRef<KonvaStage | null>(null)
+  const diagramExportRef = useRef<DiagramExportHandle | null>(null)
 
   const isModelDirty = useMemo(() => {
     if (pendingForeignKeys.length > 0) return true
@@ -562,14 +561,15 @@ export function ModelWorkspace({
   }, [onCanvas, snapToGrid])
 
   const handleExportDiagramPng = useCallback(() => {
-    const stage = diagramStageRef.current
-    if (!stage) return
-    const data = stage.toDataURL({ pixelRatio: 2 })
-    const a = document.createElement('a')
-    a.href = data
-    const safe = (modelTitle.trim() || defaultDatabaseName).replace(/[^\w.-]+/g, '_')
-    a.download = `${safe}-diagram.png`
-    a.click()
+    void (async () => {
+      const data = await diagramExportRef.current?.toDataURL({ pixelRatio: 2 })
+      if (!data) return
+      const a = document.createElement('a')
+      a.href = data
+      const safe = (modelTitle.trim() || defaultDatabaseName).replace(/[^\w.-]+/g, '_')
+      a.download = `${safe}-diagram.png`
+      a.click()
+    })()
   }, [defaultDatabaseName, modelTitle])
 
   const handleConnectColumns = useCallback(
@@ -779,18 +779,19 @@ export function ModelWorkspace({
   )
 
   const handleExportDiagramPdf = useCallback(() => {
-    const stage = diagramStageRef.current
-    if (!stage) return
-    const data = stage.toDataURL({ pixelRatio: 2 })
-    const safe = (modelTitle.trim() || defaultDatabaseName).replace(/[^\w.-]+/g, '_')
-    const w = window.open('')
-    if (!w) return
-    w.document.write(
-      `<!DOCTYPE html><html><head><title>${safe}</title></head><body style="margin:0;display:flex;justify-content:center;align-items:center;background:#111;">` +
-        `<img src="${data}" style="max-width:100%;height:auto;" alt="diagram" />` +
-        `<script>window.onload=function(){window.print()}</script></body></html>`,
-    )
-    w.document.close()
+    void (async () => {
+      const data = await diagramExportRef.current?.toDataURL({ pixelRatio: 2 })
+      if (!data) return
+      const safe = (modelTitle.trim() || defaultDatabaseName).replace(/[^\w.-]+/g, '_')
+      const w = window.open('')
+      if (!w) return
+      w.document.write(
+        `<!DOCTYPE html><html><head><title>${safe}</title></head><body style="margin:0;display:flex;justify-content:center;align-items:center;background:#111;">` +
+          `<img src="${data}" style="max-width:100%;height:auto;" alt="diagram" />` +
+          `<script>window.onload=function(){window.print()}</script></body></html>`,
+      )
+      w.document.close()
+    })()
   }, [defaultDatabaseName, modelTitle])
 
   const handleAddGroupFromSelection = useCallback(() => {
@@ -1198,7 +1199,7 @@ export function ModelWorkspace({
                     </div>
                   </div>
                 ) : null}
-                <DiagramCanvas
+                <DiagramSurfaceAdapter
                   isDark={isDark}
                   viewport={viewport}
                   onViewportChange={setViewport}
@@ -1220,19 +1221,7 @@ export function ModelWorkspace({
                   onRequestColumns={requestColumns}
                   onConnectColumns={handleConnectColumns}
                   headerColors={resolvedHeaderColors}
-                  stageRef={diagramStageRef}
-                />
-                <DiagramMinimap
-                  tableKeys={onCanvas}
-                  positions={positions}
-                  columnsByKey={diagramDisplayColumnsByKey}
-                  columnDetail={columnDetail}
-                  tableHeaderColors={resolvedHeaderColors}
-                  viewport={viewport}
-                  onViewportChange={setViewport}
-                  canvasWidth={diagramAreaSize.w}
-                  canvasHeight={diagramAreaSize.h}
-                  isDark={isDark}
+                  exportRef={diagramExportRef}
                 />
               </div>
               <ModelInspector

@@ -1,8 +1,8 @@
 /**
- * Resolve design tokens to RGB/RGBA strings so Konva Canvas can paint them
- * (computed style converts oklch CSS variables to rgb).
+ * Resolve design tokens to RGB/RGBA strings for diagram rendering.
+ * Computed styles convert oklch CSS variables to browser-ready colors.
  */
-export type KonvaPalette = {
+export type DiagramPalette = {
   canvasBg: string
   card: string
   header: string
@@ -11,21 +11,17 @@ export type KonvaPalette = {
   foreground: string
   mutedForeground: string
   edge: string
-  /** Pending / draft relationship lines */
   edgePending: string
-  /** Edge stroke when hovered */
   edgeHover: string
-  /** Diagram group frame stroke */
   groupFrame: string
   gridMinor: string
   gridMajor: string
   shadow: string
-  /** Resolved from CSS `--radius` for Konva rects */
   cornerRadiusPx: number
 }
 
-export function readKonvaPalette(isDark: boolean): KonvaPalette {
-  const base = readKonvaPaletteFromDom()
+export function readDiagramPalette(isDark: boolean): DiagramPalette {
+  const base = readDiagramPaletteFromDom()
   return {
     ...base,
     gridMinor: isDark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(15, 23, 42, 0.06)',
@@ -62,10 +58,7 @@ function readCornerRadiusPx(root: HTMLElement): number {
   return px
 }
 
-function readKonvaPaletteFromDom(): Omit<
-  KonvaPalette,
-  'gridMinor' | 'gridMajor' | 'shadow'
-> {
+function readDiagramPaletteFromDom(): Omit<DiagramPalette, 'gridMinor' | 'gridMajor' | 'shadow'> {
   const root = document.documentElement
   return {
     canvasBg: readColorVar(root, 'backgroundColor', '--background'),

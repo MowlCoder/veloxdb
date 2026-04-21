@@ -157,7 +157,7 @@ function VeloxApp() {
 
 	const connectMutation = useConnectMutation({
 		onError: (error) => {
-			notifyError(error, { category: "connection" });
+			notifyError(error, { category: "connection", force: true });
 		},
 		onSuccess: (nextConnection) => {
 			persistLastActiveConnectionId(nextConnection.id);
@@ -176,7 +176,7 @@ function VeloxApp() {
 
 	const activateConnectionMutation = useActivateConnectionMutation({
 		onError: (error) => {
-			notifyError(error, { category: "connection" });
+			notifyError(error, { category: "connection", force: true });
 		},
 		onSuccess: (nextConnection) => {
 			persistLastActiveConnectionId(nextConnection.id);
