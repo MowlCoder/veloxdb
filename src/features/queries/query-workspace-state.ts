@@ -2,6 +2,7 @@ import type { QueryResult } from "@/data/types";
 
 import {
 	DEFAULT_QUERY_SQL,
+	MAX_QUERY_HISTORY_ENTRIES,
 	MAX_QUERY_TABS,
 	type PersistedQueryWorkspace,
 	readPersistedQueryWorkspace,
@@ -30,6 +31,12 @@ export type QueryWorkspaceState = {
 	tabOrder: string[];
 	tabs: Record<string, QueryTabModel>;
 	activeTabId: string;
+	queryHistoryByConnection: Record<string, QueryHistoryEntry[]>;
+};
+
+export type QueryHistoryEntry = {
+	sql: string;
+	executedAt: number;
 };
 
 function titleFromSql(sql: string) {
@@ -75,6 +82,7 @@ export function createDefaultWorkspaceState(): QueryWorkspaceState {
 		tabOrder: [id],
 		tabs: { [id]: tab },
 		activeTabId: id,
+		queryHistoryByConnection: {},
 	};
 }
 
@@ -115,6 +123,7 @@ function hydrateFromPersisted(p: PersistedQueryWorkspace): QueryWorkspaceState {
 		tabOrder,
 		tabs,
 		activeTabId: pick(p.activeTabId),
+		queryHistoryByConnection: p.queryHistoryByConnection ?? {},
 	};
 }
 
@@ -166,6 +175,12 @@ export type QueryWorkspaceAction =
 	  }
 	| { type: "runError"; tabId: string; flightId: number; message: string }
 	| { type: "runSettled"; tabId: string; flightId: number }
+	| {
+			type: "pushHistory";
+			connectionId: string;
+			sql: string;
+			executedAt?: number;
+	  }
 	| { type: "explainStart"; tabId: string; flightId: number }
 	| {
 			type: "explainSuccess";
@@ -369,6 +384,24 @@ export function queryWorkspaceReducer(
 						...tab,
 						runInFlight: false,
 					},
+				},
+			};
+		}
+		case "pushHistory": {
+			const sql = action.sql.trim();
+			if (!sql) return state;
+			const current = state.queryHistoryByConnection[action.connectionId] ?? [];
+			const nextEntry: QueryHistoryEntry = {
+				sql,
+				executedAt: action.executedAt ?? Date.now(),
+			};
+			const deduped = current.filter((entry) => entry.sql !== sql);
+			const next = [nextEntry, ...deduped].slice(0, MAX_QUERY_HISTORY_ENTRIES);
+			return {
+				...state,
+				queryHistoryByConnection: {
+					...state.queryHistoryByConnection,
+					[action.connectionId]: next,
 				},
 			};
 		}

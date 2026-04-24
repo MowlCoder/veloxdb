@@ -1,6 +1,7 @@
-export const QUERY_WORKSPACE_STORAGE_KEY = "veloxdb.queryWorkspace.v1";
-export const QUERY_WORKSPACE_VERSION = 1 as const;
+export const QUERY_WORKSPACE_STORAGE_KEY = "veloxdb.queryWorkspace.v2";
+export const QUERY_WORKSPACE_VERSION = 2 as const;
 export const MAX_QUERY_TABS = 20;
+export const MAX_QUERY_HISTORY_ENTRIES = 100;
 
 export const DEFAULT_QUERY_SQL = `select table_schema, table_name
 from information_schema.tables
@@ -21,6 +22,10 @@ export type PersistedQueryWorkspace = {
 	tabOrder: string[];
 	tabs: Record<string, PersistedQueryTab>;
 	activeTabId: string;
+	queryHistoryByConnection?: Record<
+		string,
+		{ sql: string; executedAt: number }[]
+	>;
 };
 
 type LegacyPersistedQueryWorkspace = {
@@ -31,6 +36,10 @@ type LegacyPersistedQueryWorkspace = {
 	activeRightTabId?: string;
 	focusedPane?: string;
 	split?: string;
+	queryHistoryByConnection?: Record<
+		string,
+		{ sql: string; executedAt: number }[]
+	>;
 };
 
 function resolveLegacyActiveTabId(
@@ -76,6 +85,11 @@ export function readPersistedQueryWorkspace(): PersistedQueryWorkspace | null {
 			tabOrder: parsed.tabOrder,
 			tabs: parsed.tabs,
 			activeTabId,
+			queryHistoryByConnection:
+				parsed.queryHistoryByConnection &&
+				typeof parsed.queryHistoryByConnection === "object"
+					? parsed.queryHistoryByConnection
+					: {},
 		};
 	} catch {
 		return null;
@@ -103,6 +117,10 @@ export function toPersistedSnapshot(input: {
 		}
 	>;
 	activeTabId: string;
+	queryHistoryByConnection?: Record<
+		string,
+		{ sql: string; executedAt: number }[]
+	>;
 }): PersistedQueryWorkspace {
 	const tabs: Record<string, PersistedQueryTab> = {};
 	for (const id of input.tabOrder) {
@@ -120,5 +138,6 @@ export function toPersistedSnapshot(input: {
 		tabOrder: [...input.tabOrder],
 		tabs,
 		activeTabId: input.activeTabId,
+		queryHistoryByConnection: input.queryHistoryByConnection ?? {},
 	};
 }

@@ -196,6 +196,64 @@ pub struct TableIndexesResult {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryEditorColumn {
+    pub name: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryEditorTable {
+    pub schema: String,
+    pub name: String,
+    pub columns: Vec<QueryEditorColumn>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryEditorFunction {
+    pub schema: String,
+    pub name: String,
+    pub arg_types: Vec<String>,
+    pub return_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryEditorMetadata {
+    pub tables: Vec<QueryEditorTable>,
+    pub functions: Vec<QueryEditorFunction>,
+    pub truncated_tables: bool,
+    pub truncated_columns: bool,
+    pub truncated_functions: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LintSqlRequest {
+    pub connection_id: Option<String>,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlDiagnostic {
+    pub message: String,
+    pub severity: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub end_line: Option<usize>,
+    pub end_column: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LintSqlResult {
+    pub diagnostics: Vec<SqlDiagnostic>,
+}
+
 impl StoredConnection {
     pub fn from_input(id: String, input: ConnectionInput) -> Self {
         Self {

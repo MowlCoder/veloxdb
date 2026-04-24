@@ -12,7 +12,9 @@ use crate::db::{
 use crate::models::{
     ColumnInfo, ColumnProperties, ConnectionInput, ConnectionSummary, DdlBatchRequest,
     DdlStatementRequest, ForeignKeyEdge, IndexInfo, QueryRequest, QueryResult, SchemaRequest,
-    StoredConnection, TableIndexesResult, TableInfo, TablePropertiesApplyRequest,
+    LintSqlRequest, LintSqlResult, QueryEditorColumn, QueryEditorFunction, QueryEditorMetadata,
+    QueryEditorTable, SqlDiagnostic, StoredConnection, TableIndexesResult, TableInfo,
+    TablePropertiesApplyRequest,
 };
 
 /// Cap FK rows returned to the UI to keep IPC payloads bounded.
@@ -20,6 +22,10 @@ const MAX_FOREIGN_KEY_ROWS: i64 = 5000;
 
 /// Cap index rows per table (fetch limit + 1 to detect truncation).
 const MAX_TABLE_INDEX_ROWS: i64 = 500;
+const MAX_EDITOR_TABLES: i64 = 150;
+const MAX_EDITOR_COLUMNS_PER_TABLE: i64 = 60;
+const MAX_EDITOR_FUNCTIONS: i64 = 200;
+const MAX_LINT_SQL_BYTES: usize = 65_536;
 
 #[tauri::command]
 pub async fn connect_db(
@@ -152,6 +158,174 @@ pub async fn run_query(
             truncated: total_rows > MAX_QUERY_ROWS,
             command_tag,
         })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_query_editor_metadata(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: Option<String>,
+) -> Result<QueryEditorMetadata, String> {
+    let connection_id = resolve_connection_id(&state, connection_id).await?;
+
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        let table_rows = client
+            .query(
+                "
+            select n.nspname::text as schema_name, c.relname::text as table_name
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where c.relkind in ('r', 'p', 'v', 'm', 'f')
+              and n.nspname not in ('pg_catalog', 'information_schema')
+            order by n.nspname, c.relname
+            limit $1
+            ",
+                &[&(MAX_EDITOR_TABLES + 1)],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let truncated_tables = table_rows.len() as i64 > MAX_EDITOR_TABLES;
+        let table_rows = if truncated_tables {
+            table_rows
+                .into_iter()
+                .take(MAX_EDITOR_TABLES as usize)
+                .collect::<Vec<_>>()
+        } else {
+            table_rows
+        };
+
+        let mut tables = Vec::with_capacity(table_rows.len());
+        let mut truncated_columns = false;
+
+        for row in table_rows {
+            let schema: String = row.get(0);
+            let name: String = row.get(1);
+            let column_rows = client
+                .query(
+                    "
+                select a.attname::text as column_name,
+                       format_type(a.atttypid, a.atttypmod)::text as data_type
+                from pg_attribute a
+                join pg_class c on c.oid = a.attrelid
+                join pg_namespace n on n.oid = c.relnamespace
+                where n.nspname = $1
+                  and c.relname = $2
+                  and a.attnum > 0
+                  and not a.attisdropped
+                order by a.attnum
+                limit $3
+                ",
+                    &[&schema, &name, &(MAX_EDITOR_COLUMNS_PER_TABLE + 1)],
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let columns_exceeded = column_rows.len() as i64 > MAX_EDITOR_COLUMNS_PER_TABLE;
+            if columns_exceeded {
+                truncated_columns = true;
+            }
+            let columns = column_rows
+                .into_iter()
+                .take(MAX_EDITOR_COLUMNS_PER_TABLE as usize)
+                .map(|column| QueryEditorColumn {
+                    name: column.get(0),
+                    data_type: column.get(1),
+                })
+                .collect();
+
+            tables.push(QueryEditorTable {
+                schema,
+                name,
+                columns,
+            });
+        }
+
+        let function_rows = client
+            .query(
+                "
+            select
+              n.nspname::text as schema_name,
+              p.proname::text as function_name,
+              coalesce(pg_get_function_identity_arguments(p.oid), '')::text as args,
+              pg_get_function_result(p.oid)::text as return_type
+            from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname not in ('pg_catalog', 'information_schema')
+            order by n.nspname, p.proname
+            limit $1
+            ",
+                &[&(MAX_EDITOR_FUNCTIONS + 1)],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let truncated_functions = function_rows.len() as i64 > MAX_EDITOR_FUNCTIONS;
+        let functions = function_rows
+            .into_iter()
+            .take(MAX_EDITOR_FUNCTIONS as usize)
+            .map(|row| {
+                let args_raw: String = row.get(2);
+                QueryEditorFunction {
+                    schema: row.get(0),
+                    name: row.get(1),
+                    arg_types: if args_raw.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        args_raw
+                            .split(',')
+                            .map(|value| value.trim().to_string())
+                            .collect()
+                    },
+                    return_type: row.get(3),
+                }
+            })
+            .collect();
+
+        Ok(QueryEditorMetadata {
+            tables,
+            functions,
+            truncated_tables,
+            truncated_columns,
+            truncated_functions,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn lint_sql(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: LintSqlRequest,
+) -> Result<LintSqlResult, String> {
+    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let sql = input.sql.trim().to_string();
+    if sql.is_empty() {
+        return Ok(LintSqlResult {
+            diagnostics: Vec::new(),
+        });
+    }
+    if sql.len() > MAX_LINT_SQL_BYTES {
+        return Err("SQL is too large to lint in the editor.".to_string());
+    }
+
+    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+        let lint_sql = format!("EXPLAIN {}", sql);
+        let diagnostics = match client.simple_query(&lint_sql).await {
+            Ok(_) => Vec::new(),
+            Err(error) => vec![SqlDiagnostic {
+                message: error.to_string(),
+                severity: "error".to_string(),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            }],
+        };
+        Ok(LintSqlResult { diagnostics })
     })
     .await
 }

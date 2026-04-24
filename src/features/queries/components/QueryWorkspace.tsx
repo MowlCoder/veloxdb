@@ -1,4 +1,4 @@
-import { PlusIcon, XIcon } from "@phosphor-icons/react";
+import { ClockCounterClockwiseIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import type { UseMutationResult } from "@tanstack/react-query";
 import {
 	forwardRef,
@@ -6,17 +6,28 @@ import {
 	useCallback,
 	useEffect,
 	useImperativeHandle,
+	useMemo,
 	useReducer,
 	useRef,
+	useState,
 } from "react";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { TableInfo } from "@/data/types";
 import { ResultsGrid } from "@/features/queries/components/ResultsGrid";
 import { SqlEditor } from "@/features/queries/components/SqlEditor";
 import {
+	useLintSqlMutation,
+	useQueryEditorMetadata,
 	useExplainPlanMutation,
 	useRunQueryMutation,
 } from "@/features/queries/queries";
@@ -27,6 +38,7 @@ import {
 import {
 	getFocusedTabId,
 	loadQueryWorkspaceInitialState,
+	type QueryHistoryEntry,
 	type QueryTabModel,
 	type QueryWorkspaceState,
 	queryWorkspaceReducer,
@@ -119,7 +131,18 @@ function buildPersistSnapshot(state: QueryWorkspaceState) {
 		tabOrder: state.tabOrder,
 		tabs,
 		activeTabId: state.activeTabId,
+		queryHistoryByConnection: state.queryHistoryByConnection,
 	});
+}
+
+function extractCurrentStatement(sql: string): string {
+	const trimmed = sql.trim();
+	if (!trimmed) return "";
+	const statements = trimmed
+		.split(";")
+		.map((part) => part.trim())
+		.filter(Boolean);
+	return statements.at(-1) ?? "";
 }
 
 type QueryPaneProps = {
@@ -127,7 +150,17 @@ type QueryPaneProps = {
 	isDark: boolean;
 	onSqlChange: (sql: string) => void;
 	onRun: () => void;
+	onRunStatement: () => void;
 	onResultsSubTabChange: (value: "results" | "plan") => void;
+	editorMetadata: ReturnType<typeof useQueryEditorMetadata>["data"];
+	lintDiagnostics: {
+		message: string;
+		severity: "error" | "warning" | "info";
+		line?: number | null;
+		column?: number | null;
+		endLine?: number | null;
+		endColumn?: number | null;
+	}[];
 	resultsHeight: number;
 	onResultsResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
 	selectedTable: TableInfo | null;
@@ -157,7 +190,10 @@ function QueryPane({
 	isDark,
 	onSqlChange,
 	onRun,
+	onRunStatement,
 	onResultsSubTabChange,
+	editorMetadata,
+	lintDiagnostics,
 	resultsHeight,
 	onResultsResizeStart,
 	selectedTable,
@@ -197,6 +233,9 @@ function QueryPane({
 						isDark={isDark}
 						onChange={onSqlChange}
 						onRun={onRun}
+						onRunStatement={onRunStatement}
+						metadata={editorMetadata}
+						diagnostics={lintDiagnostics}
 					/>
 				</div>
 			</section>
@@ -412,6 +451,13 @@ export const QueryWorkspace = forwardRef<
 
 	const runQueryMutation = useRunQueryMutation({
 		onSuccess: (result, variables) => {
+			if (variables.connectionId) {
+				dispatch({
+					type: "pushHistory",
+					connectionId: variables.connectionId,
+					sql: variables.sql,
+				});
+			}
 			dispatch({
 				type: "runSuccess",
 				tabId: variables.tabId,
@@ -514,6 +560,37 @@ export const QueryWorkspace = forwardRef<
 
 	const focusedTabId = getFocusedTabId(state);
 	const focusedTab = state.tabs[focusedTabId];
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const editorMetadataQuery = useQueryEditorMetadata(connectionId);
+	const lintSqlMutation = useLintSqlMutation();
+	const lintTimerRef = useRef<number | null>(null);
+
+	useEffect(() => {
+		const sql = focusedTab?.sql ?? "";
+		const targetConnectionId = focusedTab?.connectionId ?? connectionId ?? undefined;
+		if (lintTimerRef.current != null) {
+			window.clearTimeout(lintTimerRef.current);
+		}
+		if (!targetConnectionId || sql.trim().length === 0) {
+			lintSqlMutation.reset();
+			return;
+		}
+		lintTimerRef.current = window.setTimeout(() => {
+			lintTimerRef.current = null;
+			lintSqlMutation.mutate({ connectionId: targetConnectionId, sql });
+		}, 280);
+		return () => {
+			if (lintTimerRef.current != null) {
+				window.clearTimeout(lintTimerRef.current);
+				lintTimerRef.current = null;
+			}
+		};
+	}, [
+		connectionId,
+		focusedTab?.connectionId,
+		focusedTab?.sql,
+		lintSqlMutation,
+	]);
 
 	useEffect(() => {
 		onFocusedTabCapabilitiesChange?.({
@@ -658,6 +735,12 @@ export const QueryWorkspace = forwardRef<
 		runForTab(tabId, sql);
 	}, [runForTab]);
 
+	const handleToolbarRunStatement = useCallback(() => {
+		const tabId = getFocusedTabId(stateRef.current);
+		const sql = stateRef.current.tabs[tabId]?.sql ?? "";
+		runForTab(tabId, extractCurrentStatement(sql));
+	}, [runForTab]);
+
 	const handleToolbarExplain = useCallback(() => {
 		const tabId = getFocusedTabId(stateRef.current);
 		const sql = stateRef.current.tabs[tabId]?.sql ?? "";
@@ -671,15 +754,28 @@ export const QueryWorkspace = forwardRef<
 				event.preventDefault();
 				handleToolbarRun();
 			}
+			if (event.shiftKey && event.key === "Enter") {
+				event.preventDefault();
+				handleToolbarRunStatement();
+			}
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [handleToolbarRun]);
+	}, [handleToolbarRun, handleToolbarRunStatement]);
 
 	const activeTab = state.tabs[state.activeTabId];
 	const toolbarBusy = Boolean(
 		activeTab?.runInFlight || activeTab?.explainInFlight,
 	);
+	const activeConnectionForHistory = activeTab?.connectionId ?? connectionId ?? null;
+	const historyEntries: QueryHistoryEntry[] = useMemo(
+		() =>
+			activeConnectionForHistory
+				? state.queryHistoryByConnection[activeConnectionForHistory] ?? []
+				: [],
+		[activeConnectionForHistory, state.queryHistoryByConnection],
+	);
+	const lintDiagnostics = lintSqlMutation.data?.diagnostics ?? [];
 
 	const handleSelectQueryTab = useCallback(
 		(tabId: string) => {
@@ -766,10 +862,27 @@ export const QueryWorkspace = forwardRef<
 					<Button
 						variant="outline"
 						size="sm"
+						onClick={() => setHistoryOpen(true)}
+						disabled={!activeConnectionForHistory}
+					>
+						<ClockCounterClockwiseIcon />
+						History
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
 						onClick={handleToolbarExplain}
 						disabled={toolbarBusy}
 					>
 						Explain (analyze)
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={handleToolbarRunStatement}
+						disabled={toolbarBusy}
+					>
+						Run statement
 					</Button>
 					<Button
 						variant="default"
@@ -782,6 +895,16 @@ export const QueryWorkspace = forwardRef<
 					<span className="hidden text-[11px] uppercase tracking-[0.18em] text-muted-foreground sm:inline">
 						Cmd/Ctrl + Enter
 					</span>
+					{editorMetadataQuery.isFetching ? (
+						<span className="hidden text-[11px] text-muted-foreground lg:inline">
+							Loading metadata...
+						</span>
+					) : null}
+					{lintSqlMutation.isPending ? (
+						<span className="hidden text-[11px] text-muted-foreground lg:inline">
+							Linting...
+						</span>
+					) : null}
 				</div>
 			</div>
 
@@ -798,6 +921,14 @@ export const QueryWorkspace = forwardRef<
 							stateRef.current.tabs[activeTab.id]?.sql ?? "",
 						)
 					}
+					onRunStatement={() =>
+						runForTab(
+							activeTab.id,
+							extractCurrentStatement(
+								stateRef.current.tabs[activeTab.id]?.sql ?? "",
+							),
+						)
+					}
 					onResultsSubTabChange={(value) =>
 						dispatch({
 							type: "setResultsSubTab",
@@ -805,6 +936,8 @@ export const QueryWorkspace = forwardRef<
 							value,
 						})
 					}
+					editorMetadata={editorMetadataQuery.data}
+					lintDiagnostics={lintDiagnostics}
 					resultsHeight={resultsHeight}
 					onResultsResizeStart={handleResultsResizeStart}
 					selectedTable={selectedTable}
@@ -837,6 +970,44 @@ export const QueryWorkspace = forwardRef<
 					onInsertRowSuccess={onInsertRowSuccess}
 				/>
 			) : null}
+			<Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+				<DialogContent className="max-w-2xl">
+					<DialogHeader>
+						<DialogTitle>Query history</DialogTitle>
+						<DialogDescription>
+							Recent executed queries for the active connection.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="max-h-[50vh] space-y-2 overflow-y-auto">
+						{historyEntries.length === 0 ? (
+							<p className="text-xs text-muted-foreground">
+								No recent queries for this connection.
+							</p>
+						) : (
+							historyEntries.map((entry, index) => (
+								<button
+									key={`${entry.executedAt}-${index}`}
+									type="button"
+									className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-muted/40"
+									onClick={() => {
+										dispatch({
+											type: "replaceTabSql",
+											tabId: state.activeTabId,
+											sql: entry.sql,
+										});
+										setHistoryOpen(false);
+									}}
+								>
+									<p className="truncate text-foreground">{entry.sql}</p>
+									<p className="mt-1 text-[11px] text-muted-foreground">
+										{new Date(entry.executedAt).toLocaleString()}
+									</p>
+								</button>
+							))
+						)}
+					</div>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 });

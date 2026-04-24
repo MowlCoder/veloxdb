@@ -9,6 +9,9 @@ import type {
   DdlBatchRequest,
   DdlStatementRequest,
   ForeignKeyEdge,
+  LintSqlRequest,
+  LintSqlResult,
+  QueryEditorMetadata,
   QueryRequest,
   QueryResult,
   TableInfo,
@@ -51,6 +54,18 @@ export class TauriVeloxDbRepository implements VeloxDbRepository {
   async runQuery(request: QueryRequest): Promise<QueryResult> {
     return invokeCommand('run_query', () =>
       invoke<QueryResult>('run_query', { input: request }),
+    )
+  }
+
+  async getQueryEditorMetadata(connectionId?: string): Promise<QueryEditorMetadata> {
+    return invokeCommand('get_query_editor_metadata', () =>
+      invoke<QueryEditorMetadata>('get_query_editor_metadata', { connectionId }),
+    )
+  }
+
+  async lintSql(request: LintSqlRequest): Promise<LintSqlResult> {
+    return invokeCommand('lint_sql', () =>
+      invoke<LintSqlResult>('lint_sql', { input: request }),
     )
   }
 

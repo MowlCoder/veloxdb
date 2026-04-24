@@ -1,7 +1,13 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/data/query-keys";
 import { veloxDbRepository } from "@/data/repositories";
-import type { QueryRequest, QueryResult } from "@/data/types";
+import type {
+	LintSqlResult,
+	QueryEditorMetadata,
+	QueryRequest,
+	QueryResult,
+} from "@/data/types";
 import {
 	buildInsertStatement,
 	buildUpdateStatements,
@@ -40,6 +46,24 @@ export function useRunQueryMutation(options: UseRunQueryMutationOptions = {}) {
 		onSettled: (data, error, variables) => {
 			options.onSettled?.(data, error, variables);
 		},
+	});
+}
+
+export function useQueryEditorMetadata(connectionId: string | null) {
+	return useQuery<QueryEditorMetadata>({
+		queryKey: queryKeys.queryEditorMetadata(connectionId),
+		queryFn: () =>
+			veloxDbRepository.getQueryEditorMetadata(connectionId ?? undefined),
+		enabled: Boolean(connectionId),
+		staleTime: 5 * 60 * 1000,
+	});
+}
+
+export function useLintSqlMutation() {
+	return useMutation<LintSqlResult, unknown, { connectionId?: string; sql: string }>({
+		retry: 0,
+		mutationFn: ({ connectionId, sql }) =>
+			veloxDbRepository.lintSql({ connectionId, sql }),
 	});
 }
 

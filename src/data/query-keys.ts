@@ -6,6 +6,9 @@ export const queryKeys = {
   tables: (connectionId?: string | null) =>
     ['tables', connectionId ?? null] as const,
 
+  queryEditorMetadata: (connectionId?: string | null) =>
+    ['queryEditorMetadata', connectionId ?? null] as const,
+
   schema: (connectionId: string | undefined, table?: TableInfo | null) =>
     ['schema', connectionId ?? null, table?.schema ?? null, table?.name ?? null] as const,
 

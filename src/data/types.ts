@@ -28,6 +28,50 @@ export type QueryRequest = {
   sql: string
 }
 
+export type LintSqlRequest = {
+  connectionId?: string
+  sql: string
+}
+
+export type SqlDiagnostic = {
+  message: string
+  severity: 'error' | 'warning' | 'info'
+  line?: number | null
+  column?: number | null
+  endLine?: number | null
+  endColumn?: number | null
+}
+
+export type LintSqlResult = {
+  diagnostics: SqlDiagnostic[]
+}
+
+export type QueryEditorColumn = {
+  name: string
+  dataType: string
+}
+
+export type QueryEditorTable = {
+  schema: string
+  name: string
+  columns: QueryEditorColumn[]
+}
+
+export type QueryEditorFunction = {
+  schema: string
+  name: string
+  argTypes: string[]
+  returnType: string
+}
+
+export type QueryEditorMetadata = {
+  tables: QueryEditorTable[]
+  functions: QueryEditorFunction[]
+  truncatedTables: boolean
+  truncatedColumns: boolean
+  truncatedFunctions: boolean
+}
+
 export type TableInfo = {
   schema: string
   name: string

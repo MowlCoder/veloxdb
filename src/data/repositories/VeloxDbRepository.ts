@@ -6,6 +6,9 @@ import type {
   DdlBatchRequest,
   DdlStatementRequest,
   ForeignKeyEdge,
+  LintSqlRequest,
+  LintSqlResult,
+  QueryEditorMetadata,
   QueryRequest,
   QueryResult,
   TableInfo,
@@ -22,6 +25,8 @@ export interface VeloxDbRepository {
   listConnections(): Promise<ConnectionSummary[]>
   setActiveConnection(connectionId: string): Promise<ConnectionSummary>
   runQuery(request: QueryRequest): Promise<QueryResult>
+  getQueryEditorMetadata(connectionId?: string): Promise<QueryEditorMetadata>
+  lintSql(request: LintSqlRequest): Promise<LintSqlResult>
   getTables(connectionId?: string): Promise<TableInfo[]>
   getSchema(connectionId: string | undefined, table: TableInfo): Promise<ColumnInfo[]>
   getTableProperties(connectionId: string | undefined, table: TableInfo): Promise<ColumnProperties[]>
