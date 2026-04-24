@@ -286,43 +286,56 @@ function VeloxApp() {
 			}
 
 			setSelectedTable(table);
+			try {
+				switch (action) {
+					case "selectAll":
+						queryWorkspaceRef.current?.appendQuerySql(buildSelectAllSql(table));
+						return;
+					case "selectCount":
+						queryWorkspaceRef.current?.appendQuerySql(buildSelectCountSql(table));
+						return;
+					case "insertTemplate":
+					case "updateTemplate":
+					case "deleteTemplate": {
+						const props = await queryClient.fetchQuery({
+							queryKey: queryKeys.tableProperties(connectionId, table),
+							queryFn: () =>
+								veloxDbRepository.getTableProperties(connectionId, table),
+						});
 
-			const props = await queryClient.fetchQuery({
-				queryKey: queryKeys.tableProperties(connectionId, table),
-				queryFn: () => veloxDbRepository.getTableProperties(connectionId, table),
-			});
+						const pk = props
+							.filter((c) => c.isPrimaryKey)
+							.map((c) => c.columnName);
+						const insertCols = props
+							.filter(isInsertFormColumn)
+							.map((c) => c.columnName);
 
-			const pk = props
-				.filter((c) => c.isPrimaryKey)
-				.map((c) => c.columnName);
-			const insertCols = props
-				.filter(isInsertFormColumn)
-				.map((c) => c.columnName);
-
-			switch (action) {
-				case "selectAll":
-					queryWorkspaceRef.current?.appendQuerySql(buildSelectAllSql(table));
-					break;
-				case "selectCount":
-					queryWorkspaceRef.current?.appendQuerySql(buildSelectCountSql(table));
-					break;
-				case "insertTemplate":
-					queryWorkspaceRef.current?.appendQuerySql(
-						buildInsertTemplateSql(table, insertCols),
-					);
-					break;
-				case "updateTemplate":
-					queryWorkspaceRef.current?.appendQuerySql(
-						buildUpdateTemplateSql(table, pk),
-					);
-					break;
-				case "deleteTemplate":
-					queryWorkspaceRef.current?.appendQuerySql(
-						buildDeleteTemplateSql(table, pk),
-					);
-					break;
-				default:
-					break;
+						if (action === "insertTemplate") {
+							queryWorkspaceRef.current?.appendQuerySql(
+								buildInsertTemplateSql(table, insertCols),
+							);
+							return;
+						}
+						if (action === "updateTemplate") {
+							queryWorkspaceRef.current?.appendQuerySql(
+								buildUpdateTemplateSql(table, pk),
+							);
+							return;
+						}
+						queryWorkspaceRef.current?.appendQuerySql(
+							buildDeleteTemplateSql(table, pk),
+						);
+						return;
+					}
+					default:
+						return;
+				}
+			} catch (error) {
+				notifyError(error, {
+					category: "query",
+					title: "Table quick action failed",
+					force: true,
+				});
 			}
 		},
 		[queryClient],

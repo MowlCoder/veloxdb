@@ -245,6 +245,13 @@ function QueryPane({
 												? "Running EXPLAIN…"
 												: "Run Explain (analyze) from the toolbar"}
 									</span>
+								) : tab.queryResult ? (
+									<span>
+										{`${tab.queryResult.rowCount} rows in ${tab.queryResult.executionMs} ms`}
+										{columnCount != null
+											? ` · ${columnCount} columns in selected table`
+											: ""}
+									</span>
 								) : schemaLoading ? (
 									<span>Loading columns...</span>
 								) : schemaError ? (
@@ -252,11 +259,7 @@ function QueryPane({
 								) : columnCount != null ? (
 									<span>{columnCount} columns in selected table</span>
 								) : (
-									<span>
-										{tab.queryResult
-											? `${tab.queryResult.rowCount} rows in ${tab.queryResult.executionMs} ms`
-											: "No query executed yet"}
-									</span>
+									<span>No query executed yet</span>
 								)}
 							</div>
 						</div>
