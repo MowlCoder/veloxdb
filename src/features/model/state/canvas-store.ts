@@ -181,7 +181,7 @@ function samePositionMap(
   return true
 }
 
-function sameRecordShallow<T extends object>(a: Record<string, T>, b: Record<string, T>): boolean {
+function sameRecordShallow(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   if (a === b) return true
   const aKeys = Object.keys(a)
   const bKeys = Object.keys(b)

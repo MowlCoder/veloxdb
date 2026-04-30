@@ -13,6 +13,7 @@ use tokio_postgres::NoTls;
 
 use crate::models::{ConnectionInput, ConnectionSslMode, ConnectionSummary, StoredConnection};
 use crate::ssh_tunnel::SshTunnel;
+use crate::credentials;
 
 pub const CONNECTION_STORE_PATH: &str = "connections.json";
 pub const MAX_QUERY_ROWS: usize = 1000;
@@ -125,6 +126,9 @@ pub async fn drop_pool(state: &AppState, connection_id: &str) {
 
 pub async fn disconnect_connection(state: &AppState, connection_id: &str) {
     drop_pool(state, connection_id).await;
+    if let Err(e) = credentials::delete_password(connection_id) {
+        log::warn!("Failed to delete keychain entry for {}: {}", connection_id, e);
+    }
     let mut active = state.active_connection_id.write().await;
     if active.as_deref() == Some(connection_id) {
         *active = None;
@@ -274,6 +278,16 @@ pub fn persist_connection(app: &AppHandle, connection: &StoredConnection) -> Res
     Ok(())
 }
 
+pub fn persist_connection_with_password(
+    app: &AppHandle,
+    connection: &StoredConnection,
+    password: &str,
+) -> Result<(), String> {
+    persist_connection(app, connection)?;
+    credentials::store_password(&connection.id, password)?;
+    Ok(())
+}
+
 pub fn load_connection(
     app: &AppHandle,
     connection_id: &str,
@@ -282,10 +296,35 @@ pub fn load_connection(
         .store(CONNECTION_STORE_PATH)
         .map_err(|error| error.to_string())?;
 
-    store
+    let mut connection: StoredConnection = match store
         .get(connection_id)
         .map(|value| serde_json::from_value::<StoredConnection>(value).map_err(|error| error.to_string()))
-        .transpose()
+        .transpose()?
+    {
+        Some(conn) => conn,
+        None => return Ok(None),
+    };
+
+    match credentials::get_password(connection_id) {
+        Ok(Some(password)) => connection.password = Some(password),
+        Ok(None) => {
+            let json_password = connection.password.clone();
+            if let Some(ref pwd) = json_password {
+                if let Err(e) = credentials::store_password(connection_id, pwd) {
+                    log::warn!("Failed to migrate password to keychain for {}: {}", connection_id, e);
+                } else {
+                    connection.password = None;
+                    persist_connection(app, &connection)?;
+                    connection.password = Some(pwd.clone());
+                }
+            } else {
+                log::warn!("No password found in keychain for connection {}", connection_id);
+            }
+        }
+        Err(e) => log::warn!("Failed to read password from keychain for connection {}: {}", connection_id, e),
+    }
+
+    Ok(Some(connection))
 }
 
 pub fn quote_identifier(value: &str) -> String {

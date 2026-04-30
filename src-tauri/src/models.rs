@@ -85,7 +85,8 @@ pub struct StoredConnection {
     pub port: u16,
     pub database: String,
     pub user: String,
-    pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
     pub connected_at: String,
     #[serde(default = "default_connection_ssl_mode")]
     pub ssl_mode: ConnectionSslMode,
@@ -310,7 +311,7 @@ impl StoredConnection {
             port: input.port,
             database: input.database,
             user: input.user,
-            password: input.password,
+            password: None,
             connected_at: timestamp_string(),
             ssl_mode: input.ssl_mode,
             ssh_config: input.ssh_config,
@@ -339,7 +340,7 @@ impl StoredConnection {
             port: self.port,
             database: self.database.clone(),
             user: self.user.clone(),
-            password: self.password.clone(),
+            password: self.password.clone().unwrap_or_default(),
             ssl_mode: self.ssl_mode,
             ssh_config: self.ssh_config.clone(),
         }

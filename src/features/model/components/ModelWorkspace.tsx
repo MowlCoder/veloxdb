@@ -10,12 +10,9 @@ import {
   ArrowsClockwiseIcon,
   ArrowsInSimpleIcon,
   ArrowsOutIcon,
-  CursorIcon,
   DownloadSimpleIcon,
   FilePdfIcon,
   GridFourIcon,
-  HandGrabbingIcon,
-  LinkSimpleIcon,
   MagnetIcon,
   PlusIcon,
   SquaresFourIcon,
@@ -130,12 +127,11 @@ export function ModelWorkspace({
     setDiagramTool,
     selectedKeys,
     setSelectedKeys,
-    primaryKey,
-    replaceSelection,
-    selectTable,
-    clearSelection,
-    applyMarquee,
-    selectSingleFromCatalog,
+      primaryKey,
+      replaceSelection,
+      selectTable,
+      clearSelection,
+      selectSingleFromCatalog,
     snapToGrid,
     setSnapToGrid,
     onCanvas,
@@ -615,6 +611,10 @@ export function ModelWorkspace({
   }
   const tableDragStateRef = useRef<TableDragState | null>(null)
   const diagramExportRef = useRef<DiagramExportHandle | null>(null)
+  const viewportControlRef = useRef<{
+    setViewport: (v: import('@/features/model/model-types').ViewportState) => void
+    getViewport: () => import('@/features/model/model-types').ViewportState
+  } | null>(null)
 
   const isModelDirty = useMemo(() => {
     if (pendingForeignKeys.length > 0) return true
@@ -684,12 +684,16 @@ export function ModelWorkspace({
     setColumnRequestKeys((prev) => (prev.includes(key) ? prev : [...prev, key]))
   }, [])
 
-  const handleViewportChange = useCallback(
+  const handleViewportSave = useCallback(
     (next: { x: number; y: number; scale: number }) => {
       setViewport(next, { skipHistory: true })
     },
     [setViewport],
   )
+
+  useEffect(() => {
+    viewportControlRef.current?.setViewport(viewport)
+  }, [viewport.x, viewport.y, viewport.scale])
 
   const handleSelectKey = useCallback(
     (key: TableKey | null) => {
@@ -857,6 +861,52 @@ export function ModelWorkspace({
     [canQueueForeignKey, requestColumns],
   )
 
+  const handleConnectTables = useCallback(
+    (fromKey: TableKey, toKey: TableKey) => {
+      requestColumns(fromKey)
+      requestColumns(toKey)
+
+      const fromCols = effectiveColumnsByKey[fromKey] ?? []
+      const toCols = effectiveColumnsByKey[toKey] ?? []
+      if (!fromCols.length || !toCols.length) return
+
+      const toTableName = toKey.split('.')[1] ?? ''
+      const patterns = [toTableName, toTableName.replace(/s$/i, ''), toTableName.replace(/ies$/i, 'y')]
+
+      for (const pattern of patterns) {
+        const fromCol = fromCols.find(
+          (c) =>
+            c.columnName.toLowerCase() === `${pattern}_id`.toLowerCase() ||
+            c.columnName.toLowerCase() === `${pattern}id`.toLowerCase(),
+        )
+        const toCol = toCols.find((c) => c.columnName.toLowerCase() === 'id')
+        if (fromCol && toCol) {
+          if (!canQueueForeignKey({ fromKey, fromColumn: fromCol.columnName, toKey, toColumn: toCol.columnName })) return
+          setPendingForeignKeys((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), fromKey, fromColumn: fromCol.columnName, toKey, toColumn: toCol.columnName },
+          ])
+          return
+        }
+      }
+
+      for (const fromCol of fromCols) {
+        const toCol = toCols.find(
+          (c) => c.columnName.toLowerCase() === fromCol.columnName.toLowerCase(),
+        )
+        if (toCol) {
+          if (!canQueueForeignKey({ fromKey, fromColumn: fromCol.columnName, toKey, toColumn: toCol.columnName })) return
+          setPendingForeignKeys((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), fromKey, fromColumn: fromCol.columnName, toKey, toColumn: toCol.columnName },
+          ])
+          return
+        }
+      }
+    },
+    [canQueueForeignKey, effectiveColumnsByKey, requestColumns],
+  )
+
   const applyAlign = useCallback(
     (mode: 'left' | 'right' | 'top' | 'bottom') => {
       if (selectedKeys.length < 2) return
@@ -921,7 +971,7 @@ export function ModelWorkspace({
 
   const handleResetViewport = useCallback(() => {
     setViewport({ scale: 1, x: 0, y: 0 })
-  }, [])
+  }, [setViewport])
 
   const handleResetLayout = useCallback(() => {
     setPositions((prev) => {
@@ -1297,41 +1347,6 @@ export function ModelWorkspace({
         <TabsContent value="diagram" className="m-0 flex min-h-0 flex-1 data-[state=inactive]:hidden">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
-              <span className="mr-1 text-[10px] font-medium text-muted-foreground">Tools</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn('size-8', diagramTool === 'select' && 'border-primary bg-primary/10')}
-                title="Select / move tables"
-                aria-pressed={diagramTool === 'select'}
-                onClick={() => setDiagramTool('select')}
-              >
-                <CursorIcon className="size-4" aria-hidden />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn('size-8', diagramTool === 'pan' && 'border-primary bg-primary/10')}
-                title="Hand (pan canvas)"
-                aria-pressed={diagramTool === 'pan'}
-                onClick={() => setDiagramTool('pan')}
-              >
-                <HandGrabbingIcon className="size-4" aria-hidden />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn('size-8', diagramTool === 'connect' && 'border-primary bg-primary/10')}
-                title="Connect columns (foreign key)"
-                aria-pressed={diagramTool === 'connect'}
-                onClick={() => setDiagramTool('connect')}
-              >
-                <LinkSimpleIcon className="size-4" aria-hidden />
-              </Button>
-              <div className="mx-1 hidden h-5 w-px bg-border sm:block" />
               <span className="hidden text-[10px] font-medium text-muted-foreground sm:inline">Align</span>
               <Button
                 type="button"
@@ -1571,8 +1586,9 @@ export function ModelWorkspace({
                 ) : null}
                 <DiagramSurfaceAdapter
                   isDark={isDark}
-                  viewport={viewport}
-                  onViewportChange={handleViewportChange}
+                  initialViewport={viewport}
+                  onViewportSave={handleViewportSave}
+                  viewportControlRef={viewportControlRef}
                   tableDisplays={tableDisplays}
                   positions={positions}
                   columnsByKey={diagramDisplayColumnsByKey}
@@ -1587,12 +1603,12 @@ export function ModelWorkspace({
                     clearSelection()
                     setSelectedEdge(null)
                   }}
-                  onMarqueeSelect={applyMarquee}
                   onTableDragStart={handleTableDragStart}
                   onTableDragMove={handleTableDragMove}
                   onMoveTable={handleMoveTable}
                   onRequestColumns={requestColumns}
                   onConnectColumns={handleConnectColumns}
+                  onConnectTables={handleConnectTables}
                   canConnectColumns={canQueueForeignKey}
                   selectedEdgeId={selectedEdge?.id ?? null}
                   onEdgeSelect={setSelectedEdge}

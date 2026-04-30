@@ -35,8 +35,12 @@ export type QueryWorkspaceState = {
 };
 
 export type QueryHistoryEntry = {
+	id: string;
 	sql: string;
 	executedAt: number;
+	rowCount?: number;
+	executionMs?: number;
+	connectionId: string;
 };
 
 function titleFromSql(sql: string) {
@@ -86,6 +90,23 @@ export function createDefaultWorkspaceState(): QueryWorkspaceState {
 	};
 }
 
+function migrateHistoryEntries(
+	raw: Record<string, { sql: string; executedAt: number; id?: string; connectionId?: string; rowCount?: number; executionMs?: number }[]>,
+): Record<string, QueryHistoryEntry[]> {
+	const result: Record<string, QueryHistoryEntry[]> = {}
+	for (const [connId, entries] of Object.entries(raw)) {
+		result[connId] = entries.map((e) => ({
+			id: e.id ?? crypto.randomUUID(),
+			sql: e.sql,
+			executedAt: e.executedAt,
+			rowCount: e.rowCount,
+			executionMs: e.executionMs,
+			connectionId: e.connectionId ?? connId,
+		}))
+	}
+	return result
+}
+
 function hydrateFromPersisted(p: PersistedQueryWorkspace): QueryWorkspaceState {
 	const tabs: Record<string, QueryTabModel> = {};
 	for (const id of p.tabOrder) {
@@ -123,7 +144,7 @@ function hydrateFromPersisted(p: PersistedQueryWorkspace): QueryWorkspaceState {
 		tabOrder,
 		tabs,
 		activeTabId: pick(p.activeTabId),
-		queryHistoryByConnection: p.queryHistoryByConnection ?? {},
+		queryHistoryByConnection: migrateHistoryEntries(p.queryHistoryByConnection ?? {}),
 	};
 }
 
@@ -180,6 +201,8 @@ export type QueryWorkspaceAction =
 			connectionId: string;
 			sql: string;
 			executedAt?: number;
+			rowCount?: number;
+			executionMs?: number;
 	  }
 	| { type: "explainStart"; tabId: string; flightId: number }
 	| {
@@ -189,6 +212,7 @@ export type QueryWorkspaceAction =
 			result: QueryResult;
 	  }
 	| { type: "explainError"; tabId: string; flightId: number; message: string }
+	| { type: "clearHistory"; connectionId?: string }
 	| { type: "explainSettled"; tabId: string; flightId: number }
 	| {
 			type: "applyTablePreview";
@@ -392,8 +416,12 @@ export function queryWorkspaceReducer(
 			if (!sql) return state;
 			const current = state.queryHistoryByConnection[action.connectionId] ?? [];
 			const nextEntry: QueryHistoryEntry = {
+				id: crypto.randomUUID(),
 				sql,
 				executedAt: action.executedAt ?? Date.now(),
+				rowCount: action.rowCount,
+				executionMs: action.executionMs,
+				connectionId: action.connectionId,
 			};
 			const deduped = current.filter((entry) => entry.sql !== sql);
 			const next = [nextEntry, ...deduped].slice(0, MAX_QUERY_HISTORY_ENTRIES);
@@ -499,6 +527,18 @@ export function queryWorkspaceReducer(
 				};
 			}
 			return { ...state, tabs };
+		}
+		case "clearHistory": {
+			if (action.connectionId) {
+				return {
+					...state,
+					queryHistoryByConnection: {
+						...state.queryHistoryByConnection,
+						[action.connectionId]: [],
+					},
+				};
+			}
+			return { ...state, queryHistoryByConnection: {} };
 		}
 		default:
 			return state;

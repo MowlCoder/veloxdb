@@ -27,8 +27,8 @@ export type DiagramEdgeSelection = {
 
 export type DiagramSurfaceProps = {
   isDark: boolean
-  viewport: ViewportState
-  onViewportChange: (v: ViewportState) => void
+  initialViewport: ViewportState
+  onViewportSave: (v: ViewportState) => void
   tableDisplays: TableDisplay[]
   positions: Record<TableKey, { x: number; y: number }>
   columnsByKey: Record<TableKey, ColumnInfo[] | null>
@@ -37,12 +37,12 @@ export type DiagramSurfaceProps = {
   diagramTool: DiagramTool
   onTableSelect: (key: TableKey, shiftKey: boolean) => void
   onClearSelection: () => void
-  onMarqueeSelect: (keys: TableKey[], shiftKey: boolean) => void
   onTableDragStart?: (key: TableKey) => void
   onTableDragMove?: (key: TableKey, x: number, y: number) => void
   onMoveTable: (key: TableKey, x: number, y: number) => void
   onRequestColumns: (key: TableKey) => void
   onConnectColumns?: (fromKey: TableKey, fromColumn: string, toKey: TableKey, toColumn: string) => void
+  onConnectTables?: (fromKey: TableKey, toKey: TableKey) => void
   canConnectColumns?: (input: RelationshipInput) => boolean
   selectedEdgeId?: string | null
   onEdgeSelect?: (edge: DiagramEdgeSelection | null) => void
@@ -57,4 +57,8 @@ export type DiagramSurfaceProps = {
   columnDetail?: ColumnDetailLevel
   diagramGroups?: DiagramGroup[]
   exportRef?: MutableRefObject<DiagramExportHandle | null>
+  viewportControlRef?: MutableRefObject<{
+    setViewport: (v: ViewportState) => void
+    getViewport: () => ViewportState
+  } | null>
 }

@@ -61,3 +61,17 @@ export function notifyError(
 		description,
 	});
 }
+
+/**
+ * Show a success toast for completed operations.
+ */
+export function notifySuccess(
+	title: string,
+	description?: string,
+): void {
+	toast({
+		variant: "success",
+		title,
+		description,
+	});
+}

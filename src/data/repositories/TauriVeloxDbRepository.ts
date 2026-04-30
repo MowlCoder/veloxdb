@@ -45,6 +45,12 @@ export class TauriVeloxDbRepository implements VeloxDbRepository {
     )
   }
 
+  async pingConnection(connectionId: string): Promise<void> {
+    return invokeCommand('ping_connection', () =>
+      invoke<void>('ping_connection', { connectionId }),
+    )
+  }
+
   async listConnections(): Promise<ConnectionSummary[]> {
     return invokeCommand('list_connections', () =>
       invoke<ConnectionSummary[]>('list_connections_command'),

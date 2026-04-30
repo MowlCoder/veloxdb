@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  ArrowsClockwiseIcon,
   CaretDownIcon,
   CaretRightIcon,
   DatabaseIcon,
@@ -16,6 +17,7 @@ import {
   PlusIcon,
   SidebarSimpleIcon,
   SpinnerGapIcon,
+  TrashIcon,
 } from '@phosphor-icons/react'
 
 import type { ConnectionSummary, TableInfo } from '@/data/types'
@@ -25,6 +27,7 @@ import { Input } from '@/components/ui/input'
 import { TreeView, type TreeDataItem, type TreeRenderItemParams } from '@/components/ui/tree-view'
 import type { TableQuickSqlAction } from '@/features/queries/table-quick-actions'
 import { useTableSchemaQuery } from '@/features/schema/queries'
+import { useConnectionHealth } from '@/features/connections/use-connection-health'
 
 type ConnectionContextMenuTarget = {
   kind: 'connection'
@@ -660,8 +663,8 @@ export function ConnectionsSidebarTree({
     if (!isTablesPanelExpanded) return null
 
     return (
-      <div className="ml-3 border-l border-sidebar-border/60 pl-2 pr-1">
-        <div className="py-2">
+      <div className="py-2 px-1">
+        <div className="py-1">
           <div className="relative">
             <MagnifyingGlassIcon className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-sidebar-foreground/50" />
             <Input
@@ -693,9 +696,8 @@ export function ConnectionsSidebarTree({
             ) : null}
 
             {!isTablesLoading && filteredTablesWithKeys.length > 0 ? (
-              <div className="max-h-[55vh] overflow-auto py-1">
-                <TreeView
-                  data={tableTreeData}
+              <TreeView
+                data={tableTreeData}
                   renderItem={(params: TreeRenderItemParams) => {
                     const table = params.item.data as TableInfo | undefined
                     if (!table) return null
@@ -719,8 +721,7 @@ export function ConnectionsSidebarTree({
                       />
                     )
                   }}
-                />
-              </div>
+              />
             ) : null}
           </>
         )}
@@ -838,12 +839,15 @@ export function ConnectionsSidebarTree({
 
               return (
                 <div key={connection.id}>
-                  <button
-                    type="button"
+                  <div
                     className={cn(
-                      'flex w-full items-start gap-2 px-3 py-2.5 text-left text-xs transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                      'group flex w-full items-stretch text-left text-xs transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
                       isActive && 'bg-sidebar-accent text-sidebar-accent-foreground',
                     )}
+                  >
+                    <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5"
                     onClick={(event) => {
                       // Delay activation slightly to avoid reacting to double-click.
                       if (event.detail > 1) {
@@ -884,6 +888,7 @@ export function ConnectionsSidebarTree({
                       {isActive ? <CaretDownIcon /> : <CaretRightIcon />}
                     </span>
                     <DatabaseIcon className="mt-0.5 size-3.5 shrink-0 text-sidebar-foreground/70" />
+                    <ConnectionHealthDot connectionId={connection.id} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="truncate font-medium">{connection.name}</p>
@@ -896,6 +901,28 @@ export function ConnectionsSidebarTree({
                     </div>
                   </button>
 
+                  <div className="flex shrink-0 items-center gap-0.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      type="button"
+                      className="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                      title="Refresh connection"
+                      onClick={(e) => { e.stopPropagation(); onRefreshConnection(connection) }}
+                    >
+                      <ArrowsClockwiseIcon className="size-3" />
+                    </button>
+                    {onDisconnectConnection ? (
+                      <button
+                        type="button"
+                        className="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                        title="Disconnect"
+                        onClick={(e) => { e.stopPropagation(); onDisconnectConnection(connection) }}
+                      >
+                        <TrashIcon className="size-3" />
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
                   {isActive ? renderTablesPanelForConnection(connection) : null}
                 </div>
               )
@@ -903,7 +930,50 @@ export function ConnectionsSidebarTree({
           </div>
         ) : null}
       </div>
+
+      <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2 text-[11px] text-sidebar-foreground/60">
+          <span>
+            {connections.length} connection{connections.length !== 1 ? 's' : ''}
+          </span>
+          {activeConnection ? (
+            <span className="truncate text-sidebar-foreground/80">
+              {activeConnection.database}
+            </span>
+          ) : null}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mt-1.5 h-7 w-full justify-start gap-2 text-xs"
+          onClick={onOpenConnection}
+        >
+          <PlusIcon className="size-3.5" />
+          New connection
+        </Button>
+      </div>
     </aside>
+  )
+}
+
+function ConnectionHealthDot({ connectionId }: { connectionId: string }) {
+  const health = useConnectionHealth(connectionId)
+  const color = health.isPending
+    ? 'bg-yellow-500'
+    : health.isError
+      ? 'bg-red-500'
+      : 'bg-emerald-500'
+  return (
+    <span
+      className={`mt-1.5 size-1.5 shrink-0 rounded-full ${color}`}
+      title={
+        health.isPending
+          ? 'Checking connection...'
+          : health.isError
+            ? 'Connection failed'
+            : 'Connected'
+      }
+    />
   )
 }
 

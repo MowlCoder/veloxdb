@@ -16,6 +16,7 @@ import { queryKeys } from "@/data/query-keys";
 import { veloxDbRepository } from "@/data/repositories";
 import type { ConnectionSummary, TableInfo } from "@/data/types";
 import { CommandPalette } from "@/features/commands/components/CommandPalette";
+import { ShortcutSheet } from "@/features/commands/components/ShortcutSheet";
 import { ConnectionDialog } from "@/features/connections/components/ConnectionDialog";
 import { ConnectionsSidebarTree } from "@/features/connections/components/ConnectionsSidebarTree";
 import {
@@ -32,7 +33,7 @@ import {
 	type QueryWorkspaceHandle,
 } from "@/features/queries/components/QueryWorkspace";
 import { useSaveResultEditsMutation } from "@/features/queries/queries";
-import { notifyError } from "@/lib/error-notifier";
+import { notifyError, notifySuccess } from "@/lib/error-notifier";
 import {
 	buildDropTableSql,
 	buildDeleteTemplateSql,
@@ -163,6 +164,10 @@ function VeloxApp() {
 			notifyError(error, { category: "connection", force: true });
 		},
 		onSuccess: (nextConnection) => {
+			notifySuccess(
+				`Connected to ${nextConnection.database}`,
+				`${nextConnection.user}@${nextConnection.host}:${nextConnection.port}${nextConnection.sshConfig ? ' (via SSH)' : ''}`,
+			);
 			persistLastActiveConnectionId(nextConnection.id);
 			setConnection(nextConnection);
 			setSelectedTable(null);
@@ -775,6 +780,7 @@ function VeloxApp() {
 				}}
 				onSelectTable={handleSelectTable}
 			/>
+			<ShortcutSheet />
 
 		</div>
 	);

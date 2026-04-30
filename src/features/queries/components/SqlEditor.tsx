@@ -27,6 +27,7 @@ function completionItemsFromMetadata(
 			kind: 18,
 			insertText: fqTable,
 			detail: "table",
+			range: undefined as any,
 		});
 		for (const column of table.columns) {
 			items.push({
@@ -34,6 +35,7 @@ function completionItemsFromMetadata(
 				kind: 5,
 				insertText: `${table.name}.${column.name}`,
 				detail: column.dataType,
+				range: undefined as any,
 			});
 		}
 	}
@@ -44,6 +46,7 @@ function completionItemsFromMetadata(
 			insertText: `${fn.name}($1)`,
 			insertTextRules: 4,
 			detail: fn.returnType,
+			range: undefined as any,
 		});
 	}
 	return items;
@@ -240,7 +243,7 @@ export function SqlEditor({
 		providerRef.current?.dispose();
 		providerRef.current = instance.getModel()
 			? monaco.languages.registerCompletionItemProvider("sql", {
-					provideCompletionItems: (model, position) => {
+					provideCompletionItems: (model: any, position: any) => {
 						const word = model.getWordUntilPosition(position);
 						const range = {
 							startLineNumber: position.lineNumber,
@@ -275,7 +278,7 @@ export function SqlEditor({
 		providerRef.current?.dispose();
 		if (!editorInstance || !monacoInstance) return;
 		providerRef.current = monacoInstance.languages.registerCompletionItemProvider("sql", {
-			provideCompletionItems: (model, position) => {
+			provideCompletionItems: (model: any, position: any) => {
 				const word = model.getWordUntilPosition(position);
 				const range = {
 					startLineNumber: position.lineNumber,

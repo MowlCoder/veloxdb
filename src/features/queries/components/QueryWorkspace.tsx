@@ -4,9 +4,11 @@ import {
 	PlayIcon,
 	PlusIcon,
 	PlugIcon,
+	TextHIcon,
 	XIcon,
 } from "@phosphor-icons/react";
 import type { UseMutationResult } from "@tanstack/react-query";
+import { format } from "sql-formatter";
 import {
 	forwardRef,
 	type PointerEvent as ReactPointerEvent,
@@ -21,16 +23,10 @@ import {
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { TableInfo } from "@/data/types";
 import { ResultsGrid } from "@/features/queries/components/ResultsGrid";
+import { QueryHistoryPanel } from "@/features/queries/components/QueryHistoryPanel";
 import { SqlEditor } from "@/features/queries/components/SqlEditor";
 import {
 	useLintSqlMutation,
@@ -54,7 +50,7 @@ import type {
 	ResultEditPatch,
 	SaveResultEditsRequest,
 } from "@/features/queries/result-edits";
-import { notifyError } from "@/lib/error-notifier";
+import { notifyError, notifySuccess } from "@/lib/error-notifier";
 import { cn } from "@/lib/utils";
 
 const MIN_QUERY_HEIGHT = 180;
@@ -453,6 +449,8 @@ export const QueryWorkspace = forwardRef<
 					type: "pushHistory",
 					connectionId: variables.connectionId,
 					sql: variables.sql,
+					rowCount: result.rowCount,
+					executionMs: result.executionMs,
 				});
 			}
 			dispatch({
@@ -462,6 +460,17 @@ export const QueryWorkspace = forwardRef<
 				executedSql: variables.sql.trim(),
 				result,
 			});
+			if (result.commandTag != null) {
+				notifySuccess(
+					`Query executed`,
+					`${result.rowCount} row${result.rowCount !== 1 ? 's' : ''} affected in ${result.executionMs} ms`,
+				);
+			} else {
+				notifySuccess(
+					`Query returned ${result.rowCount} row${result.rowCount !== 1 ? 's' : ''}`,
+					`${result.executionMs} ms${result.truncated ? ' (truncated to 1000 rows)' : ''}`,
+				);
+			}
 		},
 		onError: (error, variables) => {
 			notifyError(error, { category: "query" });
@@ -558,6 +567,14 @@ export const QueryWorkspace = forwardRef<
 	const focusedTabId = getFocusedTabId(state);
 	const focusedTab = state.tabs[focusedTabId];
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [favorites, setFavorites] = useState<Set<string>>(() => {
+		try {
+			const stored = localStorage.getItem('veloxdb.queryFavorites');
+			return stored ? new Set<string>(JSON.parse(stored) as string[]) : new Set<string>();
+		} catch {
+			return new Set<string>();
+		}
+	});
 	const editorMetadataQuery = useQueryEditorMetadata(connectionId);
 	const lintSqlMutation = useLintSqlMutation();
 	const lintTimerRef = useRef<number | null>(null);
@@ -744,12 +761,28 @@ export const QueryWorkspace = forwardRef<
 		explainForTab(tabId, sql);
 	}, [explainForTab]);
 
+	const handleFormatSql = useCallback(() => {
+		const tabId = getFocusedTabId(stateRef.current);
+		const sql = stateRef.current.tabs[tabId]?.sql ?? "";
+		if (!sql.trim()) return;
+		try {
+			const formatted = format(sql, { language: "postgresql", tabWidth: 2, keywordCase: "upper", linesBetweenQueries: 2 });
+			dispatch({ type: "replaceTabSql", tabId, sql: formatted });
+		} catch {
+			// graceful fallback
+		}
+	}, []);
+
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
 			const commandKey = event.metaKey || event.ctrlKey;
 			if (commandKey && event.key === "Enter") {
 				event.preventDefault();
 				handleToolbarRun();
+			}
+			if (commandKey && event.shiftKey && event.key === "F") {
+				event.preventDefault();
+				handleFormatSql();
 			}
 		};
 		window.addEventListener("keydown", onKeyDown);
@@ -768,6 +801,20 @@ export const QueryWorkspace = forwardRef<
 				: [],
 		[activeConnectionForHistory, state.queryHistoryByConnection],
 	);
+
+	const handleToggleFavorite = useCallback((entryId: string) => {
+		setFavorites((prev) => {
+			const next = new Set(prev);
+			if (next.has(entryId)) next.delete(entryId);
+			else next.add(entryId);
+			localStorage.setItem('veloxdb.queryFavorites', JSON.stringify([...next]));
+			return next;
+		});
+	}, []);
+
+	const handleClearHistory = useCallback(() => {
+		dispatch({ type: "clearHistory", connectionId: activeConnectionForHistory ?? undefined });
+	}, [dispatch, activeConnectionForHistory]);
 	const lintDiagnostics = lintSqlMutation.data?.diagnostics ?? [];
 
 	const handleSelectQueryTab = useCallback(
@@ -857,13 +904,18 @@ export const QueryWorkspace = forwardRef<
 							<span className="text-[11px] text-muted-foreground">
 								Loading metadata...
 							</span>
-						) : lintSqlMutation.isPending ? (
-							<span className="text-[11px] text-muted-foreground">Linting...</span>
-						) : (
-							<span className="text-[11px] text-transparent select-none">Status</span>
-						)}
+						) : null}
 					</div>
-					<div className="flex shrink-0 items-center gap-1.5">
+					<div className="flex items-center gap-1">
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onClick={handleFormatSql}
+							aria-label="Format SQL (Cmd/Ctrl+Shift+F)"
+							title="Format SQL (Cmd/Ctrl+Shift+F)"
+						>
+							<TextHIcon />
+						</Button>
 						<Button
 							variant="ghost"
 							size="icon-sm"
@@ -966,44 +1018,26 @@ export const QueryWorkspace = forwardRef<
 					onInsertRowSuccess={onInsertRowSuccess}
 				/>
 			) : null}
-			<Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
-				<DialogContent className="max-w-2xl">
-					<DialogHeader>
-						<DialogTitle>Query history</DialogTitle>
-						<DialogDescription>
-							Recent executed queries for the active connection.
-						</DialogDescription>
-					</DialogHeader>
-					<div className="max-h-[50vh] space-y-2 overflow-y-auto">
-						{historyEntries.length === 0 ? (
-							<p className="text-xs text-muted-foreground">
-								No recent queries for this connection.
-							</p>
-						) : (
-							historyEntries.map((entry, index) => (
-								<button
-									key={`${entry.executedAt}-${index}`}
-									type="button"
-									className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-muted/40"
-									onClick={() => {
-										dispatch({
-											type: "replaceTabSql",
-											tabId: state.activeTabId,
-											sql: entry.sql,
-										});
-										setHistoryOpen(false);
-									}}
-								>
-									<p className="truncate text-foreground">{entry.sql}</p>
-									<p className="mt-1 text-[11px] text-muted-foreground">
-										{new Date(entry.executedAt).toLocaleString()}
-									</p>
-								</button>
-							))
-						)}
-					</div>
-				</DialogContent>
-			</Dialog>
+			<QueryHistoryPanel
+				open={historyOpen}
+				onOpenChange={setHistoryOpen}
+				history={historyEntries}
+				onLoadQuery={(entry) => {
+					dispatch({ type: "addTab", connectionId: connectionId ?? null });
+					const newState = stateRef.current;
+					const lastTabId = newState.tabOrder[newState.tabOrder.length - 1];
+					if (lastTabId) {
+						dispatch({
+							type: "replaceTabSql",
+							tabId: lastTabId,
+							sql: entry.sql,
+						});
+					}
+				}}
+				onClearHistory={handleClearHistory}
+				favorites={favorites}
+				onToggleFavorite={handleToggleFavorite}
+			/>
 		</div>
 	);
 });

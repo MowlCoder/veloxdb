@@ -64,7 +64,6 @@ const connectionSchema = z
     }
   })
 
-type ConnectionFormValues = z.output<typeof connectionSchema>
 
 type ConnectionDialogProps = {
   open: boolean
@@ -125,7 +124,7 @@ export function ConnectionDialog({
     [],
   )
 
-  const form = useForm<ConnectionFormValues>({
+  const form = useForm({
     resolver: zodResolver(connectionSchema),
     defaultValues,
   })

@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::db::{
     build_pool, build_pool_custom, disconnect_connection, list_connections, load_connection,
-    persist_connection, quote_identifier, resolve_connection_id, with_pool_client_retry, AppState,
-    MAX_QUERY_ROWS,
+    persist_connection_with_password, quote_identifier, resolve_connection_id,
+    with_pool_client_retry, AppState, MAX_QUERY_ROWS,
 };
 use crate::models::{
     ColumnInfo, ColumnProperties, ConnectionInput, ConnectionSummary, DdlBatchRequest,
@@ -112,8 +112,8 @@ pub async fn connect_db(
         return Err(e.to_string());
     }
 
-    let stored_connection = StoredConnection::from_input(connection_id.clone(), input);
-    persist_connection(&app, &stored_connection)?;
+    let stored_connection = StoredConnection::from_input(connection_id.clone(), input.clone());
+    persist_connection_with_password(&app, &stored_connection, &input.password)?;
 
     state
         .pools
@@ -152,6 +152,22 @@ pub async fn set_active_connection(
     *state.active_connection_id.write().await = Some(connection_id);
 
     Ok(stored_connection.summary())
+}
+
+#[tauri::command]
+pub async fn ping_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<(), String> {
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        client
+            .simple_query("select 1")
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
