@@ -11,13 +11,14 @@ lerna-debug.log*
 /dist
 /dist-ssr
 /node_modules
-/src-tauri/target
+# /src-tauri/target
 /src-tauri/gen
 /src-tauri/gen-c
 /src-tauri/gen-cxx
 /src-tauri/gen-rust
 /src-tauri/gen-rust-bindings
 /src-tauri/gen-rust-bindings-cxx
+/node-v22.14.0-win-x64
 
 node_modules
 dist
