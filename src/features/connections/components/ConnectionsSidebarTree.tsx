@@ -13,10 +13,12 @@ import {
   CaretDownIcon,
   CaretRightIcon,
   DatabaseIcon,
+  HardDriveIcon,
   MagnifyingGlassIcon,
   PlusIcon,
   SidebarSimpleIcon,
   SpinnerGapIcon,
+  TableIcon,
   TrashIcon,
 } from '@phosphor-icons/react'
 
@@ -28,6 +30,8 @@ import { TreeView, type TreeDataItem, type TreeRenderItemParams } from '@/compon
 import type { TableQuickSqlAction } from '@/features/queries/table-quick-actions'
 import { useTableSchemaQuery } from '@/features/schema/queries'
 import { useConnectionHealth } from '@/features/connections/use-connection-health'
+import { useDatabasesQuery, useSwitchDatabaseMutation } from '@/features/connections/queries'
+import { readExpandedIds, writeExpandedIds } from '@/lib/tree-expanded-persistence'
 
 type ConnectionContextMenuTarget = {
   kind: 'connection'
@@ -107,27 +111,19 @@ function highlightText(text: string, needleLower: string): ReactNode {
 
   while (true) {
     const idx = lower.indexOf(needleLower, start)
-    if (idx === -1) break
-
-    if (idx > start) {
-      parts.push(text.slice(start, idx))
+    if (idx === -1) {
+      parts.push(<span key={keyIndex++}>{text.slice(start)}</span>)
+      break
     }
-
-    const match = text.slice(idx, idx + needleLower.length)
+    if (idx > start) {
+      parts.push(<span key={keyIndex++}>{text.slice(start, idx)}</span>)
+    }
     parts.push(
-      <span
-        key={`h-${keyIndex++}`}
-        className="rounded-[2px] bg-sidebar-accent px-0.5 text-sidebar-accent-foreground"
-      >
-        {match}
-      </span>,
+      <mark key={keyIndex++} className="bg-yellow-200 text-foreground rounded-sm px-0.5">
+        {text.slice(idx, idx + needleLower.length)}
+      </mark>,
     )
-
     start = idx + needleLower.length
-  }
-
-  if (start < text.length) {
-    parts.push(text.slice(start))
   }
 
   return <>{parts}</>
@@ -204,62 +200,24 @@ const TableTreeItem = memo(function TableTreeItem({
   onToggleExpanded,
   onOpenContextMenu,
 }: TableTreeItemProps) {
-  const pendingSelectTimeoutRef = useRef<number | null>(null)
+  const schemaQuery = useTableSchemaQuery(connectionId, table, isExpanded)
 
-  const cancelPendingSelect = useCallback(() => {
-    if (pendingSelectTimeoutRef.current != null) {
-      window.clearTimeout(pendingSelectTimeoutRef.current)
-      pendingSelectTimeoutRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => cancelPendingSelect()
-  }, [cancelPendingSelect])
-
-  const schemaQuery = useTableSchemaQuery({
-    connectionId,
-    table,
-    enabled: isExpanded,
-  })
-
-  const errorMessage =
-    schemaQuery.error instanceof Error ? schemaQuery.error.message : 'Failed to load fields'
+  const errorMessage = schemaQuery.error instanceof Error ? schemaQuery.error.message : 'Failed to load fields'
 
   return (
-    <div className="py-0.5">
-      <div className="flex min-w-0 items-center">
+    <div>
+      <div
+        className={cn(
+          'group flex w-full items-stretch text-left text-xs transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+          isSelected && 'bg-emerald-500/10 text-emerald-600',
+        )}
+      >
         <button
           type="button"
-          className="flex h-8 w-7 shrink-0 items-center justify-center text-sidebar-foreground/70 transition hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
-          onClick={onToggleExpanded}
-          aria-label={isExpanded ? 'Collapse table fields' : 'Expand table fields'}
-        >
-          {isExpanded ? <CaretDownIcon /> : <CaretRightIcon />}
-        </button>
-
-        <button
-          type="button"
-          className={cn(
-            'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs transition hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground',
-            isSelected && 'bg-sidebar-accent text-sidebar-accent-foreground',
-          )}
-          style={{ paddingLeft: `${4 + level * 10}px` }}
-          onClick={(event) => {
-            // Delay selection slightly to avoid running previews on double-click.
-            if (event.detail > 1) {
-              cancelPendingSelect()
-              return
-            }
-
-            cancelPendingSelect()
-            pendingSelectTimeoutRef.current = window.setTimeout(() => {
-              onSelectTable(table)
-              pendingSelectTimeoutRef.current = null
-            }, 250)
-          }}
+          className="flex min-w-0 flex-1 items-start gap-2 px-3 py-1.5"
+          style={{ paddingLeft: `${20 + level * 16}px` }}
+          onClick={() => onSelectTable(table)}
           onContextMenu={(event) => {
-            cancelPendingSelect()
             onOpenContextMenu(event, {
               kind: 'table',
               connectionId,
@@ -269,7 +227,6 @@ const TableTreeItem = memo(function TableTreeItem({
             })
           }}
           onDoubleClick={(event) => {
-            cancelPendingSelect()
             onOpenContextMenu(event, {
               kind: 'table',
               connectionId,
@@ -279,14 +236,17 @@ const TableTreeItem = memo(function TableTreeItem({
             })
           }}
         >
-          <DatabaseIcon className="size-3.5 shrink-0 text-sidebar-foreground/60" />
-          <div className="min-w-0">
-            <p className="truncate font-medium">
+          <TableIcon className={cn(
+            'size-3.5 shrink-0',
+            isSelected ? 'text-emerald-500' : 'text-sidebar-foreground/60',
+          )} />
+          <div className="min-w-0 truncate">
+            <span className="font-medium">
               {highlightText(table.name, highlightTableNeedleLower)}
-            </p>
-            <p className="truncate text-[11px] text-sidebar-foreground/60">
-              {highlightText(table.schema, highlightSchemaNeedleLower)}
-            </p>
+            </span>
+            <span className="text-[11px] text-sidebar-foreground/60">
+              ({highlightText(table.schema, highlightSchemaNeedleLower)})
+            </span>
           </div>
         </button>
       </div>
@@ -321,12 +281,6 @@ const TableTreeItem = memo(function TableTreeItem({
                   </div>
                 </div>
               ))}
-            </div>
-          ) : null}
-
-          {schemaQuery.data && schemaQuery.data.length === 0 ? (
-            <div className="py-1 text-[11px] text-sidebar-foreground/60">
-              No fields were returned for this table.
             </div>
           ) : null}
         </div>
@@ -367,10 +321,35 @@ export function ConnectionsSidebarTree({
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const pendingSelectTimeoutRef = useRef<number | null>(null)
   const activeConnectionId = activeConnection?.id ?? null
+  const databasesQuery = useDatabasesQuery(activeConnectionId)
+  const switchDatabaseMutation = useSwitchDatabaseMutation()
   const activeTableKey =
     activeConnectionId && selectedTable
       ? `${activeConnectionId}:${selectedTable.schema}.${selectedTable.name}`
       : null
+
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+
+  const persistScope = activeConnectionId ?? 'default'
+
+  useEffect(() => {
+    const ids = readExpandedIds(persistScope)
+    if (ids.length) {
+      setExpandedIds(new Set(ids))
+    } else if (activeConnectionId && activeConnection) {
+      const defaultExpanded = [`db-${activeConnection.id}-${activeConnection.database}`]
+      setExpandedIds(new Set(defaultExpanded))
+      writeExpandedIds(persistScope, defaultExpanded)
+    }
+  }, [persistScope, activeConnectionId, activeConnection])
+
+  const handleExpandedChange = useCallback(
+    (ids: string[]) => {
+      setExpandedIds(new Set(ids))
+      writeExpandedIds(persistScope, ids)
+    },
+    [persistScope],
+  )
 
   const { fullNeedleLower, schemaNeedleLower, tableNeedleLower } = useMemo(
     () => getTableSearchNeedles(search),
@@ -389,19 +368,8 @@ export function ConnectionsSidebarTree({
 
   const filteredTablesWithKeys = useMemo(() => {
     if (!fullNeedleLower) return tablesWithSearchKeyLower
-
     return tablesWithSearchKeyLower.filter((entry) => entry.searchKeyLower.includes(fullNeedleLower))
   }, [fullNeedleLower, tablesWithSearchKeyLower])
-
-  const tableTreeData = useMemo<TreeDataItem[]>(
-    () =>
-      filteredTablesWithKeys.map((entry) => ({
-        id: `table:${entry.table.schema}.${entry.table.name}`,
-        name: `${entry.table.schema}.${entry.table.name}`,
-        data: entry.table,
-      })),
-    [filteredTablesWithKeys],
-  )
 
   const openSidebarContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLElement>, target: SidebarContextMenuTarget) => {
@@ -427,36 +395,25 @@ export function ConnectionsSidebarTree({
     if (!contextMenu) return
 
     const onPointerDown = (event: PointerEvent) => {
-      const menuEl = contextMenuRef.current
-      if (!menuEl) return
-      const node = event.target
-      if (node instanceof Node && menuEl.contains(node)) return
-      setContextMenu(null)
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
         setContextMenu(null)
       }
     }
 
-    window.addEventListener('pointerdown', onPointerDown)
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown)
-      window.removeEventListener('keydown', onKeyDown)
-    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
   }, [contextMenu])
 
-  const visibleConnections = useMemo(() => {
-    if (!activeConnection) {
-      return connections
-    }
-
-    return connections.some((connection) => connection.id === activeConnection.id)
-      ? connections
-      : [activeConnection, ...connections]
-  }, [activeConnection, connections])
+  const scheduleSelectConnection = useCallback(
+    (connection: ConnectionSummary) => {
+      cancelPendingSelect()
+      pendingSelectTimeoutRef.current = window.setTimeout(() => {
+        onSelectConnection(connection)
+        setIsTablesPanelExpanded(true)
+      }, 160)
+    },
+    [onSelectConnection],
+  )
 
   const cancelPendingSelect = useCallback(() => {
     if (pendingSelectTimeoutRef.current != null) {
@@ -465,136 +422,48 @@ export function ConnectionsSidebarTree({
     }
   }, [])
 
-  useEffect(() => {
-    return () => cancelPendingSelect()
-  }, [cancelPendingSelect])
+  const visibleConnections = useMemo(() => {
+    if (connections.length <= 5) return connections
+    return connections
+  }, [connections])
 
-  const scheduleSelectConnection = useCallback(
-    (connection: ConnectionSummary) => {
-      cancelPendingSelect()
-      pendingSelectTimeoutRef.current = window.setTimeout(() => {
-        setIsTablesPanelExpanded(true)
-        onSelectConnection(connection)
-        pendingSelectTimeoutRef.current = null
-      }, 250)
-    },
-    [cancelPendingSelect, onSelectConnection],
+  const connectionContextMenuActions = useMemo<ContextMenuAction[]>(
+    () => [
+      { id: 'toggleConnection', label: 'Disconnect', group: 'secondary' },
+      { id: 'refreshConnection', label: 'Refresh', group: 'secondary' },
+      { id: 'disconnectConnection', label: 'Delete', group: 'danger' },
+    ],
+    [],
   )
 
-  const connectionContextMenuTarget =
-    contextMenu && isConnectionContextMenuTarget(contextMenu.target) ? contextMenu.target : null
-
-  const tableContextMenuTarget =
-    contextMenu && isTableContextMenuTarget(contextMenu.target) ? contextMenu.target : null
-
-  const connectionContextMenuActions = useMemo<ContextMenuAction[]>(() => {
-    if (!connectionContextMenuTarget) return []
-
-    const isActive = activeConnectionId === connectionContextMenuTarget.connection.id
-    const toggleLabel = isActive
-      ? isTablesPanelExpanded
-        ? isSearching
-          ? 'Tables expanded (search)'
-          : 'Collapse tables'
-        : 'Expand tables'
-      : 'Activate connection'
-
-    return [
-      {
-        id: 'toggleConnection',
-        label: toggleLabel,
-        group: 'primary',
-        disabled: isActivatingConnection,
-      },
-      {
-        id: 'refreshConnection',
-        label: 'Refresh',
-        group: 'primary',
-      },
-      {
-        id: 'renameConnection',
-        label: 'Rename',
-        group: 'secondary',
-        disabled: !onRenameConnection,
-      },
-      {
-        id: 'disconnectConnection',
-        label: 'Delete',
-        group: 'danger',
-        disabled: !onDisconnectConnection,
-      },
-    ]
-  }, [
-    activeConnectionId,
-    connectionContextMenuTarget,
-    isActivatingConnection,
-    isSearching,
-    isTablesPanelExpanded,
-    onDisconnectConnection,
-    onRenameConnection,
-  ])
-
-  const tableContextMenuActions = useMemo<ContextMenuAction[]>(() => {
-    if (!tableContextMenuTarget) return []
-
-    return [
-      { id: 'selectTable', label: 'Select table (run preview)', group: 'primary' },
-      {
-        id: 'toggleFields',
-        label: tableContextMenuTarget.isExpanded ? 'Hide fields' : 'Show fields',
-        group: 'primary',
-      },
-      { id: 'refreshTable', label: 'Refresh', group: 'primary' },
-      {
-        id: 'renameTable',
-        label: 'Rename',
-        group: 'secondary',
-        disabled: !onRenameTable,
-      },
-      {
-        id: 'deleteTable',
-        label: 'Delete',
-        group: 'danger',
-        disabled: !onDeleteTable,
-      },
+  const tableContextMenuActions = useMemo<ContextMenuAction[]>(
+    () => [
+      { id: 'selectTable', label: 'Select table', group: 'primary' },
+      { id: 'toggleFields', label: 'Toggle fields', group: 'primary' },
+      { id: 'refreshTable', label: 'Refresh', group: 'secondary' },
+      { id: 'renameTable', label: 'Rename', group: 'secondary' },
       { id: 'selectAll', label: 'SELECT * (LIMIT)', group: 'secondary' },
       { id: 'selectCount', label: 'SELECT COUNT(*)', group: 'secondary' },
       { id: 'insertTemplate', label: 'INSERT template', group: 'secondary' },
       { id: 'updateTemplate', label: 'UPDATE template', group: 'secondary' },
       { id: 'deleteTemplate', label: 'DELETE template', group: 'secondary' },
-      { id: 'addRow', label: 'Add row…', group: 'secondary' },
-      { id: 'tableProperties', label: 'Table properties', group: 'secondary' },
-    ]
-  }, [onDeleteTable, onRenameTable, tableContextMenuTarget])
+      { id: 'addRow', label: 'Add row', group: 'secondary' },
+      { id: 'tableProperties', label: 'Properties', group: 'secondary' },
+      { id: 'deleteTable', label: 'Delete table', group: 'danger' },
+    ],
+    [],
+  )
 
   const handleContextMenuAction = useCallback(
-    (action: ContextMenuAction['id']) => {
+    (action: string) => {
       if (!contextMenu) return
 
-      if (contextMenu.target.kind === 'connection') {
+      if (isConnectionContextMenuTarget(contextMenu.target)) {
         const { connection } = contextMenu.target
-        const isActive = activeConnectionId === connection.id
 
         switch (action) {
-          case 'toggleConnection':
-            if (isActive) {
-              if (isSearching) {
-                setIsTablesPanelExpanded(true)
-              } else {
-                setIsTablesPanelExpanded((prev) => !prev)
-              }
-            } else {
-              setIsTablesPanelExpanded(true)
-              onSelectConnection(connection)
-            }
-            break
           case 'refreshConnection':
             void onRefreshConnection(connection)
-            break
-          case 'renameConnection':
-            if (onRenameConnection) {
-              void onRenameConnection(connection)
-            }
             break
           case 'disconnectConnection':
             if (onDisconnectConnection) {
@@ -647,14 +516,13 @@ export function ConnectionsSidebarTree({
       activeConnectionId,
       contextMenu,
       isSearching,
-      onDeleteTable,
-      onDisconnectConnection,
-      onRefreshConnection,
-      onRefreshTable,
       onRenameConnection,
-      onRenameTable,
-      onSelectConnection,
+      onRefreshConnection,
+      onDisconnectConnection,
       onSelectTable,
+      onRefreshTable,
+      onRenameTable,
+      onDeleteTable,
       onTableQuickAction,
     ],
   )
@@ -662,68 +530,138 @@ export function ConnectionsSidebarTree({
   const renderTablesPanelForConnection = (connection: ConnectionSummary) => {
     if (!isTablesPanelExpanded) return null
 
+    const isActiveConnection = activeConnectionId === connection.id
+    const dbList = isActiveConnection ? (databasesQuery.data ?? []) : []
+
+    const buildTableTreeNode = (tables: TableInfo[]): TreeDataItem[] =>
+      tables.map((t) => ({
+        id: `table:${connection.id}:${t.schema}.${t.name}`,
+        name: t.name,
+        data: t,
+        onDoubleClick: () => {
+          onSelectTable(t)
+          onTableQuickAction('selectAll', connection.id, t)
+        },
+      }))
+
     return (
-      <div className="py-2 px-1">
-        <div className="py-1">
-          <div className="relative">
-            <MagnifyingGlassIcon className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-sidebar-foreground/50" />
-            <Input
-              value={search}
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Search tables"
-              className="border-sidebar-border bg-background/70 pl-8"
-            />
+      <div className="border-t border-sidebar-border/40">
+        {databasesQuery.isLoading && !databasesQuery.data ? (
+          <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-sidebar-foreground/60">
+            <SpinnerGapIcon className="size-3.5 animate-spin" />
+            Loading databases…
           </div>
-        </div>
-
-        {tablesErrorMessage ? (
-          <div className="px-2 py-3 text-xs text-destructive">{tablesErrorMessage}</div>
-        ) : (
-          <>
-            {!isTablesLoading && filteredTablesWithKeys.length === 0 ? (
-              <div className="px-2 py-3 text-xs text-sidebar-foreground/60">
-                {isSearching
-                  ? 'No tables match the current filter.'
-                  : 'No tables were found for this connection.'}
-              </div>
-            ) : null}
-
-            {isTablesLoading ? (
-              <div className="flex items-center gap-2 px-2 py-3 text-xs text-sidebar-foreground/60">
-                <SpinnerGapIcon className="size-4 animate-spin" />
-                Loading tables...
-              </div>
-            ) : null}
-
-            {!isTablesLoading && filteredTablesWithKeys.length > 0 ? (
-              <TreeView
-                data={tableTreeData}
-                  renderItem={(params: TreeRenderItemParams) => {
-                    const table = params.item.data as TableInfo | undefined
-                    if (!table) return null
-
-                    const tableKey = `${connection.id}:${table.schema}.${table.name}`
-                    return (
-                      <TableTreeItem
-                        connectionId={connection.id}
-                        table={table}
-                        level={params.level}
-                        isExpanded={params.isExpanded}
-                        isSelected={activeTableKey === tableKey}
-                        highlightSchemaNeedleLower={schemaNeedleLower}
-                        highlightTableNeedleLower={tableNeedleLower}
-                        onSelectTable={() => {
-                          params.select()
-                          onSelectTable(table)
-                        }}
-                        onToggleExpanded={params.toggle}
-                        onOpenContextMenu={(event, target) => openSidebarContextMenu(event, target)}
-                      />
-                    )
+        ) : dbList.length > 0 ? (
+          <div>
+            {dbList.map((db) => (
+              <div key={`db-${connection.id}-${db.name}`}>
+                <button
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center gap-2 pl-6 pr-3 py-1.5 text-left text-xs transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                    db.name === connection.database && 'bg-emerald-500/10 text-emerald-600',
+                  )}
+                  onClick={() => {
+                    if (db.name !== connection.database) {
+                      switchDatabaseMutation.mutate({
+                        connectionId: connection.id,
+                        database: db.name,
+                      })
+                    }
                   }}
-              />
-            ) : null}
-          </>
+                  disabled={switchDatabaseMutation.isPending}
+                >
+                  <span className="text-sidebar-foreground/50">
+                    {db.name === connection.database ? (
+                      <CaretDownIcon className="size-3" />
+                    ) : (
+                      <CaretRightIcon className="size-3" />
+                    )}
+                  </span>
+                  <DatabaseIcon className={cn(
+                    'size-3.5 shrink-0',
+                    db.name === connection.database ? 'text-emerald-500' : 'text-sidebar-foreground/50',
+                  )} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{db.name}</span>
+                  <span className="shrink-0 rounded border border-sidebar-border/60 px-1 text-[9px] text-sidebar-foreground/40">
+                    PG
+                  </span>
+                  {db.name === connection.database ? (
+                    <span className="shrink-0 rounded bg-emerald-500/15 px-1 text-[9px] font-medium text-emerald-600">
+                      active
+                    </span>
+                  ) : null}
+                  {switchDatabaseMutation.isPending && db.name !== connection.database ? (
+                    <SpinnerGapIcon className="size-3 animate-spin" />
+                  ) : null}
+                </button>
+
+                {db.name === connection.database ? (
+                  <div className="ml-5 border-l border-sidebar-border/60 py-1">
+                    <div className="relative mb-1 px-2">
+                      <MagnifyingGlassIcon className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sidebar-foreground/50" />
+                      <Input
+                        value={search}
+                        onChange={(event) => onSearchChange(event.target.value)}
+                        placeholder="Filter tables…"
+                        className="border-sidebar-border bg-background/70 h-7 pl-7 text-[11px]"
+                      />
+                    </div>
+
+                    {tablesErrorMessage ? (
+                      <div className="px-2 py-2 text-[11px] text-destructive">{tablesErrorMessage}</div>
+                    ) : isTablesLoading ? (
+                      <div className="flex items-center gap-2 px-2 py-2 text-[11px] text-sidebar-foreground/60">
+                        <SpinnerGapIcon className="size-3.5 animate-spin" />
+                        Loading tables…
+                      </div>
+                    ) : filteredTablesWithKeys.length === 0 ? (
+                      <div className="px-2 py-2 text-[11px] text-sidebar-foreground/60">
+                        {isSearching ? 'No tables match the filter.' : 'No tables found.'}
+                      </div>
+                    ) : (
+                      <TreeView
+                        data={buildTableTreeNode(filteredTablesWithKeys.map((e) => e.table))}
+                        expandedIds={[...expandedIds]}
+                        onExpandedChange={handleExpandedChange}
+                        initialSelectedItemId={activeTableKey ?? undefined}
+                        renderItem={(params) => {
+                          const table = params.item.data as TableInfo | undefined
+                          if (!table) return undefined
+                          const tableKey = `${connection.id}:${table.schema}.${table.name}`
+                          return (
+                            <TableTreeItem
+                              connectionId={connection.id}
+                              table={table}
+                              level={params.level}
+                              isExpanded={params.isExpanded}
+                              isSelected={activeTableKey === tableKey}
+                              highlightSchemaNeedleLower={schemaNeedleLower}
+                              highlightTableNeedleLower={tableNeedleLower}
+                              onSelectTable={() => {
+                                params.select()
+                                onSelectTable(table)
+                              }}
+                              onToggleExpanded={params.toggle}
+                              onOpenContextMenu={(event, target) => openSidebarContextMenu(event, target)}
+                            />
+                          )
+                        }}
+                      />
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : databasesQuery.isError ? (
+          <div className="px-3 py-3 text-[11px] text-destructive">
+            {databasesQuery.error instanceof Error ? databasesQuery.error.message : 'Failed to load databases'}
+          </div>
+        ) : (
+          <div className="px-3 py-2 text-[11px] text-sidebar-foreground/60">
+            No databases found.
+          </div>
         )}
       </div>
     )
@@ -737,7 +675,8 @@ export function ConnectionsSidebarTree({
             Connections
           </p>
           <p className="truncate pt-1 text-xs text-sidebar-foreground/80">
-            Browse databases, tables, and fields.
+            {connections.length} connection{connections.length !== 1 ? 's' : ''}
+            {activeConnection ? ` · ${activeConnection.database}` : ''}
           </p>
         </div>
 
@@ -761,74 +700,25 @@ export function ConnectionsSidebarTree({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {contextMenu ? (
-          <div
-            ref={contextMenuRef}
-            className="fixed z-50 min-w-[260px] max-w-[min(90vw,320px)] rounded-md border border-sidebar-border bg-popover p-1 text-xs shadow-lg"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-            role="menu"
-            aria-label="Sidebar context menu"
-          >
-            {connectionContextMenuTarget
-              ? connectionContextMenuActions.map((action, index) => (
-                  <div key={action.id}>
-                    {index > 0 && action.group !== connectionContextMenuActions[index - 1]?.group ? (
-                      <div className="my-1 h-px bg-sidebar-border/60" />
-                    ) : null}
-                    <button
-                      type="button"
-                      className={cn(
-                        'flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-60',
-                        action.group === 'danger'
-                          ? 'text-destructive hover:bg-destructive/10 hover:text-destructive'
-                          : 'text-sidebar-foreground/90',
-                      )}
-                      onClick={() => handleContextMenuAction(action.id)}
-                      disabled={action.disabled}
-                    >
-                      <span>{action.label}</span>
-                    </button>
-                  </div>
-                ))
-              : null}
-
-            {tableContextMenuTarget
-              ? tableContextMenuActions.map((action, index) => (
-                  <div key={action.id}>
-                    {index > 0 && action.group !== tableContextMenuActions[index - 1]?.group ? (
-                      <div className="my-1 h-px bg-sidebar-border/60" />
-                    ) : null}
-                    <button
-                      type="button"
-                      className={cn(
-                        'flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-60',
-                        action.group === 'danger'
-                          ? 'text-destructive hover:bg-destructive/10 hover:text-destructive'
-                          : 'text-sidebar-foreground/90',
-                      )}
-                      onClick={() => handleContextMenuAction(action.id)}
-                      disabled={action.disabled}
-                    >
-                      <span>{action.label}</span>
-                    </button>
-                  </div>
-                ))
-              : null}
-          </div>
-        ) : null}
-
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {isConnectionsLoading ? (
-          <div className="flex items-center gap-2 px-3 py-4 text-xs text-sidebar-foreground/60">
+          <div className="flex gap-2 px-3 py-4 text-xs text-sidebar-foreground/60">
             <SpinnerGapIcon className="size-4 animate-spin" />
-            Loading saved connections...
+            Loading connections…
           </div>
         ) : null}
 
-        {!isConnectionsLoading && visibleConnections.length === 0 ? (
-          <div className="space-y-2 px-3 py-4 text-xs text-sidebar-foreground/60">
-            <p>Create a new connection</p>
-            <p>Add a connection to start browsing tables and fields.</p>
+        {!isConnectionsLoading && connections.length === 0 ? (
+          <div className="p-4">
+            <div className="rounded-md border border-dashed border-sidebar-border px-3 py-5 text-center">
+              <p className="text-xs font-medium text-sidebar-foreground">No connections yet</p>
+              <p className="text-[11px] text-sidebar-foreground/60 mt-1">
+                Create a new connection
+              </p>
+              <p className="text-[11px] text-sidebar-foreground/60">
+                Add a connection to start browsing tables and fields.
+              </p>
+            </div>
           </div>
         ) : null}
 
@@ -842,86 +732,94 @@ export function ConnectionsSidebarTree({
                   <div
                     className={cn(
                       'group flex w-full items-stretch text-left text-xs transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                      isActive && 'bg-sidebar-accent text-sidebar-accent-foreground',
+                      isActive && 'bg-emerald-500/10 text-emerald-600',
                     )}
                   >
                     <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5"
-                    onClick={(event) => {
-                      // Delay activation slightly to avoid reacting to double-click.
-                      if (event.detail > 1) {
-                        cancelPendingSelect()
-                        return
-                      }
-
-                      if (isActivatingConnection) return
-
-                      if (isActive) {
-                        cancelPendingSelect()
-                        if (isSearching) {
-                          setIsTablesPanelExpanded(true)
-                        } else {
-                          setIsTablesPanelExpanded((prev) => !prev)
-                        }
-                      } else {
-                        scheduleSelectConnection(connection)
-                      }
-                    }}
-                    disabled={isActivatingConnection}
-                    onContextMenu={(event) => {
-                      cancelPendingSelect()
-                      openSidebarContextMenu(event, {
-                        kind: 'connection',
-                        connection,
-                      })
-                    }}
-                    onDoubleClick={(event) => {
-                      cancelPendingSelect()
-                      openSidebarContextMenu(event, {
-                        kind: 'connection',
-                        connection,
-                      })
-                    }}
-                  >
-                    <span className="pt-0.5 text-sidebar-foreground/70">
-                      {isActive ? <CaretDownIcon /> : <CaretRightIcon />}
-                    </span>
-                    <DatabaseIcon className="mt-0.5 size-3.5 shrink-0 text-sidebar-foreground/70" />
-                    <ConnectionHealthDot connectionId={connection.id} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate font-medium">{connection.name}</p>
-                        {isActive ? (
-                          <span className="shrink-0 border border-sidebar-border/80 bg-sidebar-primary px-1 py-0.5 text-[10px] uppercase tracking-[0.18em] text-sidebar-primary-foreground">
-                            Active
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </button>
-
-                  <div className="flex shrink-0 items-center gap-0.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
-                    <button
                       type="button"
-                      className="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                      title="Refresh connection"
-                      onClick={(e) => { e.stopPropagation(); onRefreshConnection(connection) }}
+                      className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5"
+                      onClick={(event) => {
+                        if (event.detail > 1) {
+                          cancelPendingSelect()
+                          return
+                        }
+
+                        if (isActivatingConnection) return
+
+                        if (isActive) {
+                          cancelPendingSelect()
+                          if (isSearching) {
+                            setIsTablesPanelExpanded(true)
+                          } else {
+                            setIsTablesPanelExpanded((prev) => !prev)
+                          }
+                        } else {
+                          scheduleSelectConnection(connection)
+                        }
+                      }}
+                      disabled={isActivatingConnection}
+                      onContextMenu={(event) => {
+                        cancelPendingSelect()
+                        openSidebarContextMenu(event, {
+                          kind: 'connection',
+                          connection,
+                        })
+                      }}
+                      onDoubleClick={(event) => {
+                        cancelPendingSelect()
+                        openSidebarContextMenu(event, {
+                          kind: 'connection',
+                          connection,
+                        })
+                      }}
                     >
-                      <ArrowsClockwiseIcon className="size-3" />
+                      <span className="pt-0.5 text-sidebar-foreground/70">
+                        {isActive && isTablesPanelExpanded ? <CaretDownIcon /> : <CaretRightIcon />}
+                      </span>
+                      <HardDriveIcon className={cn(
+                        'mt-0.5 size-3.5 shrink-0',
+                        isActive ? 'text-emerald-500' : 'text-sidebar-foreground/70',
+                      )} />
+                      <ConnectionHealthDot connectionId={connection.id} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate font-medium">{connection.name}</p>
+                          {isActive ? (
+                            <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-600">
+                              Active
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
                     </button>
-                    {onDisconnectConnection ? (
+
+                    <div className="flex shrink-0 items-center gap-0.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
                         type="button"
-                        className="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
-                        title="Delete connection"
-                        onClick={(e) => { e.stopPropagation(); onDisconnectConnection(connection) }}
+                        className="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                        title="Refresh connection"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRefreshConnection(connection)
+                        }}
                       >
-                        <TrashIcon className="size-3" />
+                        <ArrowsClockwiseIcon className="size-3" />
                       </button>
-                    ) : null}
+                      {onDisconnectConnection ? (
+                        <button
+                          type="button"
+                          className="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                          title="Delete connection"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onDisconnectConnection(connection)
+                          }}
+                        >
+                          <TrashIcon className="size-3" />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
 
                   {isActive ? renderTablesPanelForConnection(connection) : null}
                 </div>
@@ -931,27 +829,39 @@ export function ConnectionsSidebarTree({
         ) : null}
       </div>
 
-      <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2 text-[11px] text-sidebar-foreground/60">
-          <span>
-            {connections.length} connection{connections.length !== 1 ? 's' : ''}
-          </span>
-          {activeConnection ? (
-            <span className="truncate text-sidebar-foreground/80">
-              {activeConnection.database}
-            </span>
-          ) : null}
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="mt-1.5 h-7 w-full justify-start gap-2 text-xs"
-          onClick={onOpenConnection}
+      {contextMenu ? (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-50 min-w-[220px] overflow-hidden rounded-md border border-border bg-background p-1 shadow-md"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <PlusIcon className="size-3.5" />
-          New connection
-        </Button>
-      </div>
+          <div className="mb-1 border-b border-border px-2 py-1.5">
+            <p className="truncate text-[11px] font-medium text-foreground">
+              {isConnectionContextMenuTarget(contextMenu.target)
+                ? contextMenu.target.connection.name
+                : `${contextMenu.target.table.schema}.${contextMenu.target.table.name}`}
+            </p>
+          </div>
+
+          {(isConnectionContextMenuTarget(contextMenu.target)
+            ? connectionContextMenuActions
+            : tableContextMenuActions
+          ).map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={cn(
+                'flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs transition hover:bg-accent hover:text-accent-foreground',
+                action.group === 'danger' && 'text-destructive hover:bg-destructive/10',
+              )}
+              disabled={action.disabled}
+              onClick={() => handleContextMenuAction(action.id)}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </aside>
   )
 }
@@ -976,4 +886,3 @@ function ConnectionHealthDot({ connectionId }: { connectionId: string }) {
     />
   )
 }
-

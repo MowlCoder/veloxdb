@@ -6,10 +6,12 @@ import type {
   ConnectionSummary,
   ColumnInfo,
   ColumnProperties,
+  DatabaseInfo,
   DdlBatchRequest,
   DdlStatementRequest,
   ForeignKeyEdge,
   LintSqlRequest,
+  SwitchDatabaseRequest,
   LintSqlResult,
   QueryEditorMetadata,
   QueryRequest,
@@ -154,6 +156,18 @@ export class TauriVeloxDbRepository implements VeloxDbRepository {
   async executeDdlStatement(request: DdlStatementRequest): Promise<void> {
     await invokeCommand('execute_ddl_statement', () =>
       invoke('execute_ddl_statement', { input: request }),
+    )
+  }
+
+  async listDatabases(connectionId?: string): Promise<DatabaseInfo[]> {
+    return invokeCommand('list_databases', () =>
+      invoke<DatabaseInfo[]>('list_databases', { connectionId }),
+    )
+  }
+
+  async switchDatabase(request: SwitchDatabaseRequest): Promise<ConnectionSummary> {
+    return invokeCommand('switch_database', () =>
+      invoke<ConnectionSummary>('switch_database', { input: request }),
     )
   }
 }

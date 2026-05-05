@@ -183,3 +183,12 @@ export type TableIndexesResult = {
   truncated: boolean
 }
 
+
+export type DatabaseInfo = {
+  name: string
+}
+
+export type SwitchDatabaseRequest = {
+  connectionId: string
+  database: string
+}

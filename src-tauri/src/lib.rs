@@ -8,7 +8,7 @@ use commands::{
   apply_table_properties, connect_db, delete_connection, disconnect_db, execute_ddl_statement,
   execute_ddl_transaction, get_foreign_keys, get_query_editor_metadata, get_schema,
   get_table_indexes, get_table_properties, get_tables, lint_sql, list_connections_command,
-  ping_connection, run_query, set_active_connection,
+  list_databases, ping_connection, run_query, set_active_connection, switch_database,
 };
 use db::AppState;
 use tauri::Manager;
@@ -49,6 +49,8 @@ pub fn run() {
       ping_connection,
       list_connections_command,
       set_active_connection,
+      list_databases,
+      switch_database,
       run_query,
       get_tables,
       get_schema,

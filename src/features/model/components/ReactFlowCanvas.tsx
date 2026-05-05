@@ -109,7 +109,7 @@ const TableFlowNode = memo(({ data }: { data: TableNodeData }) => {
   return (
     <button
       type="button"
-      className={`nopan nowheel relative block cursor-grab appearance-none rounded-md border bg-card text-left shadow-sm outline-none active:cursor-grabbing ${data.selected ? 'border-primary ring-1 ring-primary/35' : 'border-border'}`}
+      className={`nopan relative block cursor-grab appearance-none rounded-md border bg-card text-left shadow-sm outline-none active:cursor-grabbing ${data.selected ? 'border-primary ring-1 ring-primary/35' : 'border-border'}`}
       style={{ width: TABLE_NODE_WIDTH, minHeight: height }}
       aria-label={`Table ${data.schema}.${data.name}`}
       onMouseEnter={() => setHovered(true)}

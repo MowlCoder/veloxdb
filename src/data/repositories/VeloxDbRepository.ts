@@ -3,9 +3,11 @@ import type {
   ColumnProperties,
   ConnectionInput,
   ConnectionSummary,
+  DatabaseInfo,
   DdlBatchRequest,
   DdlStatementRequest,
   ForeignKeyEdge,
+  SwitchDatabaseRequest,
   LintSqlRequest,
   LintSqlResult,
   QueryEditorMetadata,
@@ -41,5 +43,7 @@ export interface VeloxDbRepository {
   ): Promise<TableIndexesResult>
   executeDdlTransaction(request: DdlBatchRequest): Promise<void>
   executeDdlStatement(request: DdlStatementRequest): Promise<void>
+  listDatabases(connectionId?: string): Promise<DatabaseInfo[]>
+  switchDatabase(request: SwitchDatabaseRequest): Promise<ConnectionSummary>
 }
 

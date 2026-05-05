@@ -9,10 +9,12 @@ import type {
 	QueryResult,
 } from "@/data/types";
 import {
-	buildInsertStatement,
-	buildUpdateStatements,
-	type InsertRowRequest,
-	type SaveResultEditsRequest,
+  buildInsertStatement,
+  buildUpdateStatements,
+  buildDeleteStatements,
+  type InsertRowRequest,
+  type SaveResultEditsRequest,
+  type DeleteRowsRequest,
 } from "@/features/queries/result-edits";
 import { shouldRetryTransientDbInvoke } from "@/lib/transient-invoke-retry";
 
@@ -171,4 +173,41 @@ export function useInsertRowMutation(
 			options.onError?.(error, variables);
 		},
 	});
+}
+
+type UseDeleteRowsMutationOptions = {
+  onError?: (error: unknown, variables: DeleteRowsRequest) => void;
+};
+
+export function useDeleteRowsMutation(
+  options: UseDeleteRowsMutationOptions = {},
+) {
+  return useMutation({
+    retry: shouldRetryTransientDbInvoke,
+    mutationFn: async (request: DeleteRowsRequest) => {
+      const statements = buildDeleteStatements(request);
+      if (statements.length === 0) {
+        return;
+      }
+      try {
+        await veloxDbRepository.runQuery({
+          connectionId: request.connectionId,
+          sql: `BEGIN;\n${statements}\nCOMMIT;`,
+        });
+      } catch (error) {
+        try {
+          await veloxDbRepository.runQuery({
+            connectionId: request.connectionId,
+            sql: "ROLLBACK;",
+          });
+        } catch {
+          // Ignore rollback failure.
+        }
+        throw error;
+      }
+    },
+    onError: (error, variables) => {
+      options.onError?.(error, variables);
+    },
+  });
 }

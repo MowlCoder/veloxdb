@@ -57,6 +57,7 @@ type ResultsGridProps = {
 	insertTable?: TableInfo | null;
 	canInsertRow?: boolean;
 	onInsertRowSuccess?: () => void;
+	onDeleteRows?: (primaryKeys: Record<string, string | null>[]) => Promise<void>;
 };
 
 function formatValue(value: string | null | undefined) {
@@ -257,6 +258,7 @@ export function ResultsGrid({
 	insertTable = null,
 	canInsertRow = false,
 	onInsertRowSuccess = () => {},
+	onDeleteRows,
 }: ResultsGridProps) {
 	const parentRef = useRef<HTMLDivElement | null>(null);
 	const horizontalScrollRef = useRef<HTMLDivElement | null>(null);
@@ -275,6 +277,7 @@ export function ResultsGrid({
 	const [gridError, setGridError] = useState<string | null>(null);
 	const [showInsertRow, setShowInsertRow] = useState(false);
 	const [insertDraft, setInsertDraft] = useState<Record<string, string>>({});
+	const [deleteBusy, setDeleteBusy] = useState(false);
 	const lastInsertRowTriggerRef = useRef(insertRowTrigger);
 	const resizeRafRef = useRef<number | null>(null);
 	const pendingResizeWidthsRef = useRef<Record<string, number>>({});
@@ -841,6 +844,47 @@ export function ResultsGrid({
 			const message =
 				error instanceof Error ? error.message : "Failed to save edits.";
 			setGridError(message);
+		}
+	};
+
+	const handleDeleteRows = async () => {
+		if (!onDeleteRows) return;
+
+		const selectedRowIds = Object.keys(rowSelection);
+		if (selectedRowIds.length === 0) {
+			setGridError("Select one or more rows to delete.");
+			return;
+		}
+
+		const pkValues: Record<string, string | null>[] = [];
+		for (const rowId of selectedRowIds) {
+			const source = indexedRows.find((row) => row.rowId === rowId);
+			if (source?.hasCompletePrimaryKey) {
+				pkValues.push(source.primaryKey);
+			}
+		}
+
+		if (pkValues.length === 0) {
+			setGridError("None of the selected rows have a usable primary key.");
+			return;
+		}
+
+		const confirmed = window.confirm(
+			`Delete ${pkValues.length} selected row(s)? This action cannot be undone.`,
+		);
+		if (!confirmed) return;
+
+		setGridError(null);
+		setDeleteBusy(true);
+		try {
+			await onDeleteRows(pkValues);
+			setRowSelection({});
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : "Failed to delete rows.";
+			setGridError(message);
+		} finally {
+			setDeleteBusy(false);
 		}
 	};
 

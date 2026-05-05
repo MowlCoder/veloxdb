@@ -13,11 +13,11 @@ use crate::db::{
 };
 use crate::credentials;
 use crate::models::{
-    ColumnInfo, ColumnProperties, ConnectionInput, ConnectionSummary, DdlBatchRequest,
+    ColumnInfo, ColumnProperties, ConnectionInput, ConnectionSummary, DatabaseInfo, DdlBatchRequest,
     DdlStatementRequest, ForeignKeyEdge, IndexInfo, QueryRequest, QueryResult, SchemaRequest,
     LintSqlRequest, LintSqlResult, QueryEditorColumn, QueryEditorFunction, QueryEditorMetadata,
-    QueryEditorTable, SqlDiagnostic, StoredConnection, TableIndexesResult, TableInfo,
-    TablePropertiesApplyRequest,
+    QueryEditorTable, SqlDiagnostic, StoredConnection, SwitchDatabaseRequest, TableIndexesResult,
+    TableInfo, TablePropertiesApplyRequest,
 };
 use crate::ssh_tunnel::SshTunnel;
 
@@ -192,6 +192,95 @@ pub async fn delete_connection(
     }
     crate::db::delete_connection_from_store(&app, &connection_id)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn list_databases(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: Option<String>,
+) -> Result<Vec<DatabaseInfo>, String> {
+    let connection_id = resolve_connection_id(&state, connection_id).await?;
+
+    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+        let rows = client
+            .query(
+                "select datname from pg_database where datistemplate = false and has_database_privilege(datname, 'CONNECT') order by datname",
+                &[],
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let name: String = row.get(0);
+                DatabaseInfo { name }
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn switch_database(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: SwitchDatabaseRequest,
+) -> Result<ConnectionSummary, String> {
+    let mut stored_connection = load_connection(&app, &input.connection_id)?
+        .ok_or_else(|| "Stored connection details were not found.".to_string())?;
+
+    drop_pool(&state, &input.connection_id).await;
+
+    stored_connection.database = input.database.clone();
+    stored_connection.connected_at = crate::models::timestamp_string();
+    persist_connection_with_password(&app, &stored_connection, &stored_connection.password.clone().unwrap_or_default())?;
+
+    let connection_input = stored_connection.to_input();
+
+    let pool = if let Some(ref ssh_config) = connection_input.ssh_config {
+        if ssh_config.is_active() {
+            let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, connection_input.port).await {
+                Ok(tunnel) => tunnel,
+                Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+            };
+            let local_port = tunnel.local_port;
+            state
+                .ssh_tunnels
+                .write()
+                .await
+                .insert(input.connection_id.clone(), tunnel);
+            build_pool_custom("127.0.0.1", local_port, &connection_input)?
+        } else {
+            build_pool(&connection_input)?
+        }
+    } else {
+        build_pool(&connection_input)?
+    };
+
+    let client = match pool.get().await {
+        Ok(client) => client,
+        Err(e) => {
+            drop_pool(&state, &input.connection_id).await;
+            return Err(e.to_string());
+        }
+    };
+
+    if let Err(e) = client.simple_query("select 1").await {
+        drop_pool(&state, &input.connection_id).await;
+        return Err(e.to_string());
+    }
+
+    state
+        .pools
+        .write()
+        .await
+        .insert(input.connection_id.clone(), pool);
+
+    *state.active_connection_id.write().await = Some(input.connection_id);
+
+    Ok(stored_connection.summary())
 }
 
 #[tauri::command]

@@ -34,7 +34,7 @@ import {
 	QueryWorkspace,
 	type QueryWorkspaceHandle,
 } from "@/features/queries/components/QueryWorkspace";
-import { useSaveResultEditsMutation } from "@/features/queries/queries";
+import { useSaveResultEditsMutation, useDeleteRowsMutation } from "@/features/queries/queries";
 import { notifyError, notifySuccess } from "@/lib/error-notifier";
 import { useSettings, resolveTheme } from "@/lib/settings";
 import {
@@ -268,6 +268,14 @@ function VeloxApp() {
 			});
 		},
 	});
+	const deleteRowsMutation = useDeleteRowsMutation({
+		onError: (error) => {
+			notifyError(error, {
+				category: "query",
+				title: "Failed to delete rows",
+			});
+		},
+	});
 
 	const connectionsErrorMessage =
 		connectionsQuery.error instanceof Error
@@ -316,10 +324,10 @@ function VeloxApp() {
 			try {
 				switch (action) {
 					case "selectAll":
-						queryWorkspaceRef.current?.appendQuerySql(buildSelectAllSql(table));
+						queryWorkspaceRef.current?.openTabWithSql(buildSelectAllSql(table));
 						return;
 					case "selectCount":
-						queryWorkspaceRef.current?.appendQuerySql(buildSelectCountSql(table));
+						queryWorkspaceRef.current?.openTabWithSql(buildSelectCountSql(table));
 						return;
 					case "insertTemplate":
 					case "updateTemplate":
@@ -338,18 +346,18 @@ function VeloxApp() {
 							.map((c) => c.columnName);
 
 						if (action === "insertTemplate") {
-							queryWorkspaceRef.current?.appendQuerySql(
+							queryWorkspaceRef.current?.openTabWithSql(
 								buildInsertTemplateSql(table, insertCols),
 							);
 							return;
 						}
 						if (action === "updateTemplate") {
-							queryWorkspaceRef.current?.appendQuerySql(
+							queryWorkspaceRef.current?.openTabWithSql(
 								buildUpdateTemplateSql(table, pk),
 							);
 							return;
 						}
-						queryWorkspaceRef.current?.appendQuerySql(
+						queryWorkspaceRef.current?.openTabWithSql(
 							buildDeleteTemplateSql(table, pk),
 						);
 						return;
@@ -591,6 +599,22 @@ function VeloxApp() {
 		queryWorkspaceRef.current?.refreshFocusedResults();
 	};
 
+	const handleDeleteRows = async (
+		primaryKeys: Record<string, string | null>[],
+	) => {
+		if (!selectedTable || !connection?.id || primaryKeys.length === 0) {
+			return;
+		}
+
+		await deleteRowsMutation.mutateAsync({
+			connectionId: connection.id,
+			table: selectedTable,
+			primaryKeys,
+		});
+
+		queryWorkspaceRef.current?.refreshFocusedResults();
+	};
+
 	return (
 		<div
 			className="flex h-screen overflow-hidden bg-background text-foreground"
@@ -682,16 +706,16 @@ function VeloxApp() {
 								</TabsList>
 							</Tabs>
 
-							<div className="min-w-0">
-								<p className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
-									VeloxDB.dev
-								</p>
-								<p className="truncate text-sm text-foreground">
-									{connection
-										? `Connected to ${connection.database} on ${connection.host}:${connection.port}`
-										: "Choose a saved connection or create a new one to start querying"}
-								</p>
-							</div>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
+                  VeloxDB.dev
+                </p>
+                <p className="truncate text-sm text-foreground">
+                  {connection
+                    ? `Connected to ${connection.database} on ${connection.host}:${connection.port}`
+                    : "Choose a saved connection or create a new one to start querying"}
+                </p>
+              </div>
 						</div>
 
 						<div className="flex shrink-0 items-center gap-2">
