@@ -49,6 +49,10 @@ export function ResultsToolbar({
 	onCancelInsert,
 	insertBusy,
 	insertDisabled,
+	selectionCount,
+	onDeleteRows,
+	deleteBusy,
+	deleteDisabledReason,
 }: ResultsToolbarProps) {
 	return (
 		<div className="min-w-0 overflow-x-auto border-b border-border bg-muted/20 px-3 py-2">
@@ -85,15 +89,27 @@ export function ResultsToolbar({
 								</Button>
 							) : null}
 						</>
-					) : null}
-					<Button
-						variant="outline"
-						size="xs"
-						onClick={onRefresh}
-						disabled={isBusy}
-					>
-						Refresh
-					</Button>
+            ) : null}
+          {onDeleteRows ? (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={onDeleteRows}
+              disabled={isBusy || deleteBusy || selectionCount === 0}
+              title={deleteDisabledReason}
+              className="text-destructive hover:bg-destructive/10"
+            >
+              {deleteBusy ? "Deleting…" : `Delete${selectionCount ? ` (${selectionCount})` : ""}`}
+            </Button>
+          ) : null}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={onRefresh}
+            disabled={isBusy}
+          >
+            Refresh
+          </Button>
 					<Button variant="outline" size="xs" onClick={onCopy}>
 						Copy
 					</Button>

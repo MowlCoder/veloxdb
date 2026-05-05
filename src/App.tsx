@@ -34,7 +34,7 @@ import {
 	QueryWorkspace,
 	type QueryWorkspaceHandle,
 } from "@/features/queries/components/QueryWorkspace";
-import { useSaveResultEditsMutation } from "@/features/queries/queries";
+import { useSaveResultEditsMutation, useDeleteRowsMutation } from "@/features/queries/queries";
 import { notifyError, notifySuccess } from "@/lib/error-notifier";
 import { useSettings, resolveTheme } from "@/lib/settings";
 import {
@@ -265,6 +265,14 @@ function VeloxApp() {
 			notifyError(error, {
 				category: "query",
 				title: "Failed to save edits",
+			});
+		},
+	});
+	const deleteRowsMutation = useDeleteRowsMutation({
+		onError: (error) => {
+			notifyError(error, {
+				category: "query",
+				title: "Failed to delete rows",
 			});
 		},
 	});
@@ -590,6 +598,22 @@ function VeloxApp() {
 		queryWorkspaceRef.current?.refreshFocusedResults();
 	};
 
+	const handleDeleteRows = async (
+		primaryKeys: Record<string, string | null>[],
+	) => {
+		if (!selectedTable || !connection?.id || primaryKeys.length === 0) {
+			return;
+		}
+
+		await deleteRowsMutation.mutateAsync({
+			connectionId: connection.id,
+			table: selectedTable,
+			primaryKeys,
+		});
+
+		queryWorkspaceRef.current?.refreshFocusedResults();
+	};
+
 
 	return (
 		<div
@@ -734,8 +758,9 @@ function VeloxApp() {
 						saveDisabledReason={saveDisabledReason}
 						isResultSingleTableEditable={isResultSingleTableEditable}
 						saveResultEditsMutation={saveResultEditsMutation}
-						onSaveResultEdits={handleSaveResultEdits}
-						onFocusedTabCapabilitiesChange={setFocusedQueryCaps}
+            onSaveResultEdits={handleSaveResultEdits}
+            onDeleteRows={handleDeleteRows}
+            onFocusedTabCapabilitiesChange={setFocusedQueryCaps}
 						onActivateConnectionForTab={handleActivateConnectionForTab}
 						insertRowTrigger={insertRowTrigger}
 						insertConnectionId={connection?.id ?? null}

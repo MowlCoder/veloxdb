@@ -95,6 +95,7 @@ type QueryWorkspaceProps = {
 	isResultSingleTableEditable: boolean;
 	saveResultEditsMutation: SaveMutation;
 	onSaveResultEdits: (patches: ResultEditPatch[]) => Promise<void>;
+	onDeleteRows?: (primaryKeys: Record<string, string | null>[]) => Promise<void>;
 	onFocusedTabCapabilitiesChange?: (caps: {
 		hasLastQuery: boolean;
 		hasResult: boolean;
@@ -167,6 +168,7 @@ type QueryPaneProps = {
 	primaryKeyColumns: string[];
 	saveResultEditsMutation: SaveMutation;
 	onSaveResultEdits: (patches: ResultEditPatch[]) => Promise<void>;
+	onDeleteRows?: (primaryKeys: Record<string, string | null>[]) => Promise<void>;
 	onRefreshResults: () => void;
 	onRefreshPlan: () => void;
 	connectionError: unknown;
@@ -200,6 +202,7 @@ function QueryPane({
 	primaryKeyColumns,
 	saveResultEditsMutation,
   onSaveResultEdits,
+  onDeleteRows,
   onRefreshResults,
 	onRefreshPlan,
 	connectionError,
@@ -318,8 +321,9 @@ function QueryPane({
 								primaryKeyColumns={primaryKeyColumns}
 								saveDisabledReason={saveDisabledReason}
 								onRefresh={onRefreshResults}
-								onSaveEdits={onSaveResultEdits}
-								onAddRow={onAddRow}
+              onSaveEdits={onSaveResultEdits}
+              onDeleteRows={onDeleteRows}
+              onAddRow={onAddRow}
 								insertRowTrigger={insertRowTrigger}
 								insertConnectionId={insertConnectionId}
 								insertTable={insertTable}
@@ -419,6 +423,7 @@ export const QueryWorkspace = forwardRef<
 		isResultSingleTableEditable,
 		saveResultEditsMutation,
 		onSaveResultEdits,
+		onDeleteRows,
 		onFocusedTabCapabilitiesChange,
 		onActivateConnectionForTab,
 		onOpenAddRow,
@@ -1005,8 +1010,9 @@ export const QueryWorkspace = forwardRef<
 					editableColumns={editableColumns}
 					primaryKeyColumns={primaryKeyColumns}
 					saveResultEditsMutation={saveResultEditsMutation}
-					onSaveResultEdits={onSaveResultEdits}
-					onRefreshResults={() => {
+          onSaveResultEdits={onSaveResultEdits}
+          onDeleteRows={onDeleteRows}
+          onRefreshResults={() => {
 						const t = stateRef.current.tabs[activeTab.id];
 						runForTab(activeTab.id, t?.lastExecutedSql || t?.sql || "");
 					}}
