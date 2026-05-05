@@ -11,6 +11,7 @@ lerna-debug.log*
 /dist
 /dist-ssr
 /node_modules
+/src-tauri/target
 /src-tauri/target/debug
 /src-tauri/target/release/build
 /src-tauri/target/release/.cargo-lock
