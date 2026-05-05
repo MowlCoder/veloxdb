@@ -26,6 +26,10 @@ type ResultsToolbarProps = {
 	onCancelInsert?: () => void;
 	insertBusy?: boolean;
 	insertDisabled?: boolean;
+	selectionCount?: number;
+	onDeleteRows?: () => void;
+	deleteBusy?: boolean;
+	deleteDisabledReason?: string;
 };
 
 export function ResultsToolbar({
@@ -45,6 +49,10 @@ export function ResultsToolbar({
 	onCancelInsert,
 	insertBusy,
 	insertDisabled,
+	selectionCount,
+	onDeleteRows,
+	deleteBusy,
+	deleteDisabledReason,
 }: ResultsToolbarProps) {
 	return (
 		<div className="min-w-0 overflow-x-auto border-b border-border bg-muted/20 px-3 py-2">

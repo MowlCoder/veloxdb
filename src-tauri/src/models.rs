@@ -302,6 +302,19 @@ pub struct LintSqlResult {
     pub diagnostics: Vec<SqlDiagnostic>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchDatabaseRequest {
+    pub connection_id: String,
+    pub database: String,
+}
+
 impl StoredConnection {
     pub fn from_input(id: String, input: ConnectionInput) -> Self {
         Self {
@@ -347,7 +360,7 @@ impl StoredConnection {
     }
 }
 
-fn timestamp_string() -> String {
+pub fn timestamp_string() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

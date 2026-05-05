@@ -84,6 +84,24 @@ export type InsertRowRequest = {
   columns: InsertRowColumnValue[]
 }
 
+export type DeleteRowsRequest = {
+  connectionId?: string
+  table: TableInfo
+  primaryKeys: Record<string, string | null>[]
+}
+
+export function buildDeleteStatements(request: DeleteRowsRequest): string {
+  const tableName = `${quoteIdentifier(request.table.schema)}.${quoteIdentifier(request.table.name)}`
+  return request.primaryKeys
+    .map((pk) => {
+      const whereClause = buildWhereClause(pk)
+      if (!whereClause) return ''
+      return `DELETE FROM ${tableName} WHERE ${whereClause};`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
 export function buildInsertStatement(request: InsertRowRequest): string {
   const tableName = `${quoteIdentifier(request.table.schema)}.${quoteIdentifier(request.table.name)}`
   if (request.columns.length === 0) {

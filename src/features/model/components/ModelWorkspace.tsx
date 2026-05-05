@@ -1289,8 +1289,33 @@ export function ModelWorkspace({
 
   if (!isTablesLoading && tables.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center px-4 text-center text-xs text-muted-foreground">
-        No tables found for this connection. Create or introspect tables first.
+      <div className="flex flex-1 items-center justify-center px-4">
+        <div className="max-w-sm rounded-md border border-border/80 bg-background/90 px-5 py-4 text-center shadow-sm">
+          <p className="text-sm font-medium text-foreground">No tables yet</p>
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            This database has no tables. Create your first table visually or run a DDL script.
+          </p>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="text-xs"
+              onClick={() => setCreateTableOpen(true)}
+            >
+              + Create table
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="text-xs"
+              onClick={() => setDdlOpen(true)}
+            >
+              Run DDL script…
+            </Button>
+          </div>
+        </div>
       </div>
     )
   }
@@ -1604,7 +1629,7 @@ export function ModelWorkspace({
               <div ref={diagramWrapRef} className="relative min-h-0 min-w-0 flex-1">
                 {onCanvas.length === 0 && tables.length > 0 ? (
                   <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center px-6">
-                    <div className="max-w-sm rounded-md border border-border/80 bg-background/90 px-4 py-3 text-center shadow-sm backdrop-blur-sm">
+                    <div className="pointer-events-auto max-w-sm rounded-md border border-border/80 bg-background/90 px-4 py-3 text-center shadow-sm backdrop-blur-sm">
                       <p className="text-xs font-medium text-foreground">Diagram is empty</p>
                       <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
                         Open the <span className="font-medium text-foreground">Catalog</span> tab and add tables.
@@ -1612,6 +1637,26 @@ export function ModelWorkspace({
                         <span className="font-medium text-foreground">Hand</span> pans the canvas (
                         <span className="font-medium text-foreground">Space</span> + drag also pans).
                       </p>
+                      <div className="mt-3 flex items-center justify-center gap-2">
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          className="text-xs"
+                          onClick={() => setModelTab('catalog')}
+                        >
+                          Open Catalog
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="text-xs"
+                          onClick={() => setCreateTableOpen(true)}
+                        >
+                          + Create table
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ) : null}

@@ -69,6 +69,7 @@ export type QueryWorkspaceHandle = {
 	replaceQuerySql: (sql: string) => void;
 	/** Append SQL to the editor without executing (binds active connection when set). */
 	appendQuerySql: (sql: string) => void;
+	openTabWithSql: (sql: string) => void;
 	runLastQuery: () => void;
 	refreshFocusedResults: () => void;
 	getHasLastQuery: () => boolean;
@@ -94,6 +95,7 @@ type QueryWorkspaceProps = {
 	isResultSingleTableEditable: boolean;
 	saveResultEditsMutation: SaveMutation;
 	onSaveResultEdits: (patches: ResultEditPatch[]) => Promise<void>;
+	onDeleteRows?: (primaryKeys: Record<string, string | null>[]) => Promise<void>;
 	onFocusedTabCapabilitiesChange?: (caps: {
 		hasLastQuery: boolean;
 		hasResult: boolean;
@@ -166,6 +168,7 @@ type QueryPaneProps = {
 	primaryKeyColumns: string[];
 	saveResultEditsMutation: SaveMutation;
 	onSaveResultEdits: (patches: ResultEditPatch[]) => Promise<void>;
+	onDeleteRows?: (primaryKeys: Record<string, string | null>[]) => Promise<void>;
 	onRefreshResults: () => void;
 	onRefreshPlan: () => void;
 	connectionError: unknown;
@@ -199,6 +202,7 @@ function QueryPane({
 	primaryKeyColumns,
 	saveResultEditsMutation,
 	onSaveResultEdits,
+	onDeleteRows,
 	onRefreshResults,
 	onRefreshPlan,
 	connectionError,
@@ -418,6 +422,7 @@ export const QueryWorkspace = forwardRef<
 		isResultSingleTableEditable,
 		saveResultEditsMutation,
 		onSaveResultEdits,
+		onDeleteRows,
 		onFocusedTabCapabilitiesChange,
 		onActivateConnectionForTab,
 		onOpenAddRow,
@@ -718,6 +723,13 @@ export const QueryWorkspace = forwardRef<
 					tabId,
 					sql,
 					bindConnectionId: connectionId ?? undefined,
+				});
+			},
+			openTabWithSql: (sql: string) => {
+				dispatch({
+					type: "addTabWithSql",
+					sql,
+					connectionId: connectionId ?? null,
 				});
 			},
 			setActiveTabConnection: (cid: string | null) => {

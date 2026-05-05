@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/data/query-keys'
 import { veloxDbRepository } from '@/data/repositories'
 import { shouldRetryTransientDbInvoke } from '@/lib/transient-invoke-retry'
-import type { ConnectionInput, ConnectionSummary } from '@/data/types'
+import type { ConnectionInput, ConnectionSummary, SwitchDatabaseRequest } from '@/data/types'
 
 export function useConnectionsQuery() {
   return useQuery({
@@ -175,3 +175,41 @@ export function useDeleteConnectionMutation(options: UseDeleteConnectionMutation
   })
 }
 
+
+type UseSwitchDatabaseMutationOptions = {
+  onSuccess?: (connection: ConnectionSummary) => void
+  onError?: (error: unknown, input: SwitchDatabaseRequest) => void
+}
+
+export function useSwitchDatabaseMutation(options: UseSwitchDatabaseMutationOptions = {}) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    retry: shouldRetryTransientDbInvoke,
+    mutationFn: (input: SwitchDatabaseRequest) =>
+      veloxDbRepository.switchDatabase(input),
+    onSuccess: (nextConnection) => {
+      queryClient.setQueryData<ConnectionSummary[]>(queryKeys.connections(), (current) => {
+        const existing = current ?? []
+        const filtered = existing.filter((c) => c.id !== nextConnection.id)
+        return [nextConnection, ...filtered]
+      })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.connections() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tables(nextConnection.id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queryEditorMetadata(nextConnection.id) })
+      options.onSuccess?.(nextConnection)
+    },
+    onError: (error, input) => {
+      options.onError?.(error, input)
+    },
+  })
+}
+
+export function useDatabasesQuery(connectionId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.databases(connectionId),
+    queryFn: () => veloxDbRepository.listDatabases(connectionId ?? undefined),
+    enabled: Boolean(connectionId),
+    staleTime: 30 * 1000,
+  })
+}
