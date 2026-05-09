@@ -165,9 +165,15 @@ docker compose -f docker-compose.pg.yml up -d
 | **Tests** | Vitest |
 
 ---
-<p align="center">
-<a href="https://www.buymeacoffee.com/abeni3ase7i"><img src="https://img.buymeacoffee.com/button-api/?text=Support VeloxDB&emoji=&slug=abeni3ase7i&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" /></a>](https://www.star-history.com/?repos=abeni16%2Fveloxdb&type=date&legend=top-left)
-</p>
+## Star History
+
+<a href="https://www.star-history.com/?repos=abeni16%2Fveloxdb&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=abeni16/veloxdb&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=abeni16/veloxdb&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=abeni16/veloxdb&type=date&legend=top-left" />
+ </picture>
+</a>
 ---
 
 ## Contributing
