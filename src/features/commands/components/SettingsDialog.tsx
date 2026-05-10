@@ -7,6 +7,8 @@ import {
   TableIcon,
   PlugIcon,
   DatabaseIcon,
+  InfoIcon,
+  ArrowSquareOutIcon,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
 
@@ -15,6 +17,10 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useSettings, type AppTheme, type FontSize, type NullDisplay } from '@/lib/settings'
+import pkg from '../../../../package.json'
+
+const GITHUB_REPO = 'abeni16/veloxdb'
+const VELOXDB_SITE = 'https://veloxdb.dev'
 
 const tabs = [
   { id: 'appearance', label: 'Appearance', Icon: PaintBrushIcon },
@@ -22,6 +28,7 @@ const tabs = [
   { id: 'results', label: 'Results', Icon: TableIcon },
   { id: 'connections', label: 'Connections', Icon: PlugIcon },
   { id: 'data', label: 'Data', Icon: DatabaseIcon },
+  { id: 'about', label: 'About', Icon: InfoIcon },
 ]
 
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
@@ -55,6 +62,23 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       r.readAsText(file)
     }
     input.click()
+  }, [])
+
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available' | 'error'>('idle')
+  const [latestVersion, setLatestVersion] = useState<string | null>(null)
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdateStatus('checking')
+    try {
+      const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const release = await res.json() as { tag_name: string }
+      const latest = release.tag_name.replace(/^v/, '')
+      setLatestVersion(latest)
+      setUpdateStatus(latest === pkg.version ? 'up-to-date' : 'available')
+    } catch {
+      setUpdateStatus('error')
+    }
   }, [])
 
   return (
@@ -160,6 +184,73 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 }}>
                   <TrashIcon className="mr-1.5 size-3.5" />Clear history
                 </Button>
+              </Field>
+            </Section>}
+
+            {tab === 'about' && <Section title="About">
+              <Field label="Version" desc={`VeloxDB v${pkg.version}`}>
+                <span className="inline-flex items-center h-8 px-3 rounded-md border border-border bg-muted/50 text-xs font-mono text-foreground">
+                  v{pkg.version}
+                </span>
+              </Field>
+
+              <Field label="License" desc="Released under the MIT License.">
+                <span className="text-xs text-muted-foreground">MIT</span>
+              </Field>
+
+              <Field label="Website" desc="Documentation, updates, and more.">
+                <a
+                  href={VELOXDB_SITE}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  veloxdb.dev
+                  <ArrowSquareOutIcon className="size-3" />
+                </a>
+              </Field>
+
+              <Field label="GitHub" desc="Source code, issues, and releases.">
+                <a
+                  href={`https://github.com/${GITHUB_REPO}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  github.com/abeni16/veloxdb
+                  <ArrowSquareOutIcon className="size-3" />
+                </a>
+              </Field>
+
+              <Field label="Check for updates" desc="See if a newer version is available on GitHub.">
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={checkForUpdates}
+                    disabled={updateStatus === 'checking'}
+                  >
+                    {updateStatus === 'checking' ? 'Checking...' : 'Check now'}
+                  </Button>
+                  {updateStatus === 'up-to-date' && (
+                    <span className="text-xs text-emerald-600">Up to date</span>
+                  )}
+                  {updateStatus === 'available' && latestVersion && (
+                    <a
+                      href={`https://github.com/${GITHUB_REPO}/releases/tag/${latestVersion}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-amber-500 hover:underline"
+                    >
+                      v{latestVersion} available
+                      <ArrowSquareOutIcon className="size-3" />
+                    </a>
+                  )}
+                  {updateStatus === 'error' && (
+                    <span className="text-xs text-destructive">Failed to check</span>
+                  )}
+                </div>
               </Field>
             </Section>}
           </div>
