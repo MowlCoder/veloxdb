@@ -91,6 +91,8 @@ type ModelWorkspaceProps = {
   selectedTable: TableInfo | null
 }
 
+const LOAD_ALL_CONFIRM_THRESHOLD = 150
+
 function tableKeyToParts(key: TableKey): { schema: string; name: string } {
   const [schema = '', name = ''] = key.split('.')
   return { schema, name }
@@ -252,13 +254,16 @@ export function ModelWorkspace({
   const [migrationPreviewOpen, setMigrationPreviewOpen] = useState(false)
   const [applyPending, setApplyPending] = useState(false)
   const [applyError, setApplyError] = useState<string | null>(null)
+  const [initialSeedReason, setInitialSeedReason] = useState<null | 'relationships' | 'sample'>(null)
 
   const fkSeedDoneRef = useRef(false)
   const initialRecoveryDoneRef = useRef(false)
 
   useEffect(() => {
+    void connectionId
     initialRecoveryDoneRef.current = false
     fkSeedDoneRef.current = false
+    setInitialSeedReason(null)
   }, [connectionId])
 
   useEffect(() => {
@@ -315,6 +320,7 @@ export function ModelWorkspace({
           ? [...fkSeed]
           : tables.slice(0, 12).map((t) => tableKey(t))
       if (fallbackKeys.length > 0) {
+        setInitialSeedReason(fkSeed.size > 0 ? 'relationships' : 'sample')
         setOnCanvas(fallbackKeys)
         setPositions((prev) => ensurePositions(fallbackKeys, prev))
       }
@@ -547,6 +553,11 @@ export function ModelWorkspace({
     }
     return list
   }, [onCanvas, tablesByKey])
+  const totalTableCount = tables.length
+  const onDiagramCount = tablesOnCanvas.length
+  const hiddenTableCount = Math.max(totalTableCount - onDiagramCount, 0)
+  const isPartialDiagram = hiddenTableCount > 0
+  const showInitialSeedHint = initialSeedReason != null && isPartialDiagram
 
   const tableDisplays = useMemo(() => {
     return tablesOnCanvas.map((t) => {
@@ -1278,6 +1289,36 @@ export function ModelWorkspace({
     [setPendingCreateTables],
   )
 
+  const handleLoadAllTables = useCallback(() => {
+    if (!isPartialDiagram) return
+    if (
+      totalTableCount >= LOAD_ALL_CONFIRM_THRESHOLD &&
+      !window.confirm(
+        `Load all ${totalTableCount} tables into the diagram? This may reduce responsiveness on large schemas.`,
+      )
+    ) {
+      return
+    }
+    const keys = tables.map((table) => tableKey(table))
+    setOnCanvas((prev) => {
+      const next = new Set(prev)
+      for (const key of keys) {
+        next.add(key)
+      }
+      if (next.size === prev.length) return prev
+      return [...next]
+    })
+    setPositions((prev) => ensurePositions(keys, prev))
+    setColumnRequestKeys((prev) => {
+      const next = new Set(prev)
+      for (const key of keys) {
+        next.add(key)
+      }
+      if (next.size === prev.length) return prev
+      return [...next]
+    })
+  }, [isPartialDiagram, tables, totalTableCount, setOnCanvas, setPositions, setColumnRequestKeys])
+
   if (isTablesLoading && !tables.length) {
     return (
       <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
@@ -1632,6 +1673,44 @@ export function ModelWorkspace({
                 <FilePdfIcon className="size-4" aria-hidden />
               </Button>
             </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-2 py-1.5 text-[11px]">
+              <span className="text-muted-foreground">
+                Showing {onDiagramCount} of {totalTableCount} tables on diagram.
+              </span>
+              {isPartialDiagram ? (
+                <span className="text-muted-foreground">Subset is loaded first for performance.</span>
+              ) : (
+                <span className="text-emerald-600">All tables are currently on the diagram.</span>
+              )}
+              {isPartialDiagram ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={handleLoadAllTables}
+                  >
+                    Load all tables ({hiddenTableCount} more)
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() => setModelTab('catalog')}
+                  >
+                    Open catalog
+                  </Button>
+                </>
+              ) : null}
+              {showInitialSeedHint ? (
+                <span className="text-muted-foreground/80">
+                  {initialSeedReason === 'relationships'
+                    ? 'Seeded from FK-connected tables.'
+                    : 'Seeded with a starter subset.'}
+                </span>
+              ) : null}
+            </div>
             <div className="flex min-h-0 min-w-0 flex-1">
               <div ref={diagramWrapRef} className="relative min-h-0 min-w-0 flex-1">
                 {onCanvas.length === 0 && tables.length > 0 ? (
@@ -1809,6 +1888,7 @@ export function ModelWorkspace({
           <ModelCatalog
             tables={tables}
             onCanvasSet={onCanvasSet}
+            onDiagramCount={onDiagramCount}
             selectedKeys={selectedKeys}
             onSelectKey={handleSelectKey}
             onAddToCanvas={handleAddToCanvas}
