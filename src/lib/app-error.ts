@@ -73,9 +73,16 @@ function inferCategoryFromMessage(m: string): AppErrorCategory | undefined {
 	if (
 		lower.includes("syntax error") ||
 		(lower.includes("relation") && lower.includes("does not exist")) ||
+		(lower.includes("table") && lower.includes("doesn't exist")) ||
+		(lower.includes("no such table")) ||
+		(lower.includes("unknown column")) ||
 		(lower.includes("column") && lower.includes("does not exist")) ||
+		lower.includes("decode error") ||
+		lower.includes("unsupported value type") ||
+		lower.includes("constraint failed") ||
 		lower.includes("permission denied") ||
 		lower.includes("duplicate key") ||
+		lower.includes("duplicate entry") ||
 		lower.includes("violates") ||
 		lower.includes("canceling statement") ||
 		lower.includes("deadlock")

@@ -24,7 +24,7 @@ import {
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { TableInfo } from "@/data/types";
+import type { DatabaseEngine, TableInfo } from "@/data/types";
 import { ResultsGrid } from "@/features/queries/components/ResultsGrid";
 import { QueryHistoryPanel } from "@/features/queries/components/QueryHistoryPanel";
 import { SqlEditor } from "@/features/queries/components/SqlEditor";
@@ -79,6 +79,7 @@ export type QueryWorkspaceHandle = {
 
 type QueryWorkspaceProps = {
 	connectionId: string | null;
+	connectionEngine: DatabaseEngine | null;
 	connectionError: unknown;
 	connectionErrorMessage: string;
 	isDark: boolean;
@@ -142,6 +143,7 @@ function buildPersistSnapshot(state: QueryWorkspaceState) {
 
 type QueryPaneProps = {
 	tab: QueryTabModel;
+	connectionEngine: DatabaseEngine | null;
 	isDark: boolean;
 	onSqlChange: (sql: string) => void;
 	onRun: () => void;
@@ -183,6 +185,7 @@ type QueryPaneProps = {
 
 function QueryPane({
 	tab,
+	connectionEngine,
 	isDark,
 	onSqlChange,
 	onRun,
@@ -265,7 +268,11 @@ function QueryPane({
 								</TabsList>
 								<p className="mt-1 truncate text-sm text-foreground">
 									{resultsTab === "plan"
-										? "EXPLAIN (ANALYZE, BUFFERS) output"
+										? connectionEngine === "mysql"
+											? "EXPLAIN output"
+											: connectionEngine === "sqlite"
+												? "EXPLAIN QUERY PLAN output"
+												: "EXPLAIN (ANALYZE, BUFFERS) output"
 										: selectedTable
 											? `${selectedTable.schema}.${selectedTable.name}`
 											: "Current query output"}
@@ -279,7 +286,9 @@ function QueryPane({
 											? `${tab.planResult.rowCount} plan lines in ${tab.planResult.executionMs} ms`
 											: explainPending
 												? "Running EXPLAIN…"
-												: "Run Explain (analyze) from the toolbar"}
+												: connectionEngine === "postgres"
+													? "Run Explain (analyze) from the toolbar"
+													: "Run Explain from the toolbar"}
 									</span>
 								) : tab.queryResult ? (
 									<span>
@@ -407,6 +416,7 @@ export const QueryWorkspace = forwardRef<
 >(function QueryWorkspace(
 	{
 		connectionId,
+		connectionEngine,
 		connectionError,
 		connectionErrorMessage,
 		isDark,
@@ -687,12 +697,13 @@ export const QueryWorkspace = forwardRef<
 			dispatch({ type: "explainStart", tabId, flightId });
 			explainPlanMutation.mutate({
 				connectionId: targetId,
+				engine: connectionEngine ?? "postgres",
 				sql: trimmed,
 				tabId,
 				flightId,
 			});
 		},
-		[connectionId, onRequestConnection, explainPlanMutation],
+		[connectionId, connectionEngine, onRequestConnection, explainPlanMutation],
 	);
 
 	useImperativeHandle(
@@ -779,12 +790,18 @@ export const QueryWorkspace = forwardRef<
 		const sql = stateRef.current.tabs[tabId]?.sql ?? "";
 		if (!sql.trim()) return;
 		try {
-			const formatted = format(sql, { language: "postgresql", tabWidth: 2, keywordCase: "upper", linesBetweenQueries: 2 });
+			const language =
+				connectionEngine === "mysql"
+					? "mysql"
+					: connectionEngine === "sqlite"
+						? "sqlite"
+						: "postgresql";
+			const formatted = format(sql, { language, tabWidth: 2, keywordCase: "upper", linesBetweenQueries: 2 });
 			dispatch({ type: "replaceTabSql", tabId, sql: formatted });
 		} catch {
 			// graceful fallback
 		}
-	}, []);
+	}, [connectionEngine]);
 
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
@@ -800,7 +817,7 @@ export const QueryWorkspace = forwardRef<
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [handleToolbarRun]);
+	}, [handleToolbarRun, handleFormatSql]);
 
 	const activeTab = state.tabs[state.activeTabId];
 	const toolbarBusy = Boolean(
@@ -827,7 +844,7 @@ export const QueryWorkspace = forwardRef<
 
 	const handleClearHistory = useCallback(() => {
 		dispatch({ type: "clearHistory", connectionId: activeConnectionForHistory ?? undefined });
-	}, [dispatch, activeConnectionForHistory]);
+	}, [activeConnectionForHistory]);
 	const lintDiagnostics = lintSqlMutation.data?.diagnostics ?? [];
 
 	const handleSelectQueryTab = useCallback(
@@ -944,8 +961,8 @@ export const QueryWorkspace = forwardRef<
 							size="icon-sm"
 							onClick={handleToolbarExplain}
 							disabled={toolbarBusy}
-							aria-label="Run explain analyze"
-							title="Explain (analyze)"
+							aria-label={connectionEngine === "postgres" ? "Run explain analyze" : "Run explain"}
+							title={connectionEngine === "postgres" ? "Explain (analyze)" : "Explain"}
 						>
 							<DatabaseIcon />
 						</Button>
@@ -979,6 +996,7 @@ export const QueryWorkspace = forwardRef<
 			{activeTab ? (
 				<QueryPane
 					tab={activeTab}
+					connectionEngine={connectionEngine}
 					isDark={isDark}
 					onSqlChange={(sql) =>
 						dispatch({ type: "setSql", tabId: activeTab.id, sql })

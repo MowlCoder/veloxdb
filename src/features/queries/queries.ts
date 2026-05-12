@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/data/query-keys";
 import { veloxDbRepository } from "@/data/repositories";
 import type {
+	DatabaseEngine,
 	LintSqlResult,
 	QueryEditorMetadata,
 	QueryRequest,
@@ -78,6 +79,7 @@ export function useLintSqlMutation() {
 
 export type ExplainPlanTabVariables = {
 	connectionId: string;
+	engine: DatabaseEngine;
 	sql: string;
 	tabId: string;
 	flightId: number;
@@ -93,19 +95,29 @@ type UseExplainPlanMutationOptions = {
 	) => void;
 };
 
-/** Runs EXPLAIN (ANALYZE, BUFFERS) unless the SQL already starts with EXPLAIN or PREPARE. */
+export function buildExplainSql(engine: DatabaseEngine, sql: string): string {
+	const trimmed = sql.trim();
+	const upper = trimmed.toUpperCase();
+	if (upper.startsWith("EXPLAIN") || upper.startsWith("PREPARE")) {
+		return trimmed;
+	}
+	if (engine === "postgres") {
+		return `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)\n${trimmed}`;
+	}
+	if (engine === "mysql") {
+		return `EXPLAIN FORMAT=TRADITIONAL\n${trimmed}`;
+	}
+	return `EXPLAIN QUERY PLAN\n${trimmed}`;
+}
+
+/** Runs engine-aware EXPLAIN unless SQL already starts with EXPLAIN/PREPARE. */
 export function useExplainPlanMutation(
 	options: UseExplainPlanMutationOptions = {},
 ) {
 	return useMutation({
 		retry: shouldRetryTransientDbInvoke,
-		mutationFn: ({ connectionId, sql }: ExplainPlanTabVariables) => {
-			const trimmed = sql.trim();
-			const upper = trimmed.toUpperCase();
-			const body =
-				upper.startsWith("EXPLAIN") || upper.startsWith("PREPARE")
-					? trimmed
-					: `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)\n${trimmed}`;
+		mutationFn: ({ connectionId, sql, engine }: ExplainPlanTabVariables) => {
+			const body = buildExplainSql(engine, sql);
 			return veloxDbRepository.runQuery({ connectionId, sql: body });
 		},
 		onSuccess: (result, variables) => {

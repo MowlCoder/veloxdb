@@ -2,14 +2,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use tauri::{AppHandle, State};
+use sqlx::{Column, Decode, Row, Type};
+use sqlx::mysql::{MySql, MySqlRow};
+use sqlx::sqlite::{Sqlite, SqliteRow};
 use tokio_postgres::error::ErrorPosition;
 use tokio_postgres::SimpleQueryMessage;
 use uuid::Uuid;
 
 use crate::db::{
-    build_pool, build_pool_custom, disconnect_connection, drop_pool, list_connections,
-    load_connection, persist_connection_with_password, quote_identifier,
-    resolve_connection_id, with_pool_client_retry, AppState, MAX_QUERY_ROWS,
+    build_mysql_pool, build_mysql_pool_custom, build_pool, build_pool_custom, build_sqlite_pool,
+    disconnect_connection, drop_pool, get_or_create_mysql_pool, get_or_create_sqlite_pool,
+    list_connections, load_connection, persist_connection_with_password, quote_identifier,
+    resolve_connection_engine, with_pool_client_retry, AppState, DEFAULT_MYSQL_PORT, MAX_QUERY_ROWS,
 };
 use crate::credentials;
 use crate::models::{
@@ -17,7 +21,7 @@ use crate::models::{
     DdlStatementRequest, ForeignKeyEdge, IndexInfo, QueryRequest, QueryResult, SchemaRequest,
     LintSqlRequest, LintSqlResult, QueryEditorColumn, QueryEditorFunction, QueryEditorMetadata,
     QueryEditorTable, SqlDiagnostic, StoredConnection, SwitchDatabaseRequest, TableIndexesResult,
-    TableInfo, TablePropertiesApplyRequest,
+    TableInfo, TablePropertiesApplyRequest, DatabaseEngine,
 };
 use crate::export::{
     DiagramExportRequest, ExportQueryRequest,
@@ -34,6 +38,32 @@ const MAX_EDITOR_TABLES: i64 = 150;
 const MAX_EDITOR_COLUMNS_PER_TABLE: i64 = 60;
 const MAX_EDITOR_FUNCTIONS: i64 = 200;
 const MAX_LINT_SQL_BYTES: usize = 65_536;
+
+fn mysql_decode_error(context: &str, column_name: &str, index: Option<usize>, detail: &str) -> String {
+    match index {
+        Some(idx) => format!(
+            "MySQL decode error in {} at column '{}' (index {}): {}",
+            context, column_name, idx, detail
+        ),
+        None => format!(
+            "MySQL decode error in {} at column '{}': {}",
+            context, column_name, detail
+        ),
+    }
+}
+
+fn sqlite_decode_error(context: &str, column_name: &str, index: Option<usize>, detail: &str) -> String {
+    match index {
+        Some(idx) => format!(
+            "SQLite decode error in {} at column '{}' (index {}): {}",
+            context, column_name, idx, detail
+        ),
+        None => format!(
+            "SQLite decode error in {} at column '{}': {}",
+            context, column_name, detail
+        ),
+    }
+}
 
 fn byte_offset_to_line_col(sql: &str, byte_offset: usize) -> Option<(usize, usize)> {
     if byte_offset == 0 || byte_offset > sql.len() {
@@ -73,6 +103,173 @@ fn lint_error_range(error: &tokio_postgres::Error, sql: &str) -> (Option<usize>,
     }
 }
 
+fn mysql_get_idx<T>(row: &MySqlRow, index: usize, column_name: &str, context: &str) -> Result<T, String>
+where
+    for<'r> T: Decode<'r, MySql> + Type<MySql>,
+{
+    row.try_get::<T, _>(index)
+        .map_err(|error| mysql_decode_error(context, column_name, Some(index), &error.to_string()))
+}
+
+fn sqlite_get_idx<T>(row: &SqliteRow, index: usize, column_name: &str, context: &str) -> Result<T, String>
+where
+    for<'r> T: Decode<'r, Sqlite> + Type<Sqlite>,
+{
+    row.try_get::<T, _>(index)
+        .map_err(|error| sqlite_decode_error(context, column_name, Some(index), &error.to_string()))
+}
+
+fn sqlite_get_name<T>(row: &SqliteRow, column_name: &str, context: &str) -> Result<T, String>
+where
+    for<'r> T: Decode<'r, Sqlite> + Type<Sqlite>,
+{
+    row.try_get::<T, _>(column_name).map_err(|error| {
+        format!(
+            "SQLite decode error in {} at column '{}': {}",
+            context, column_name, error
+        )
+    })
+}
+
+fn mysql_value_to_string(row: &MySqlRow, index: usize, column_name: &str, context: &str) -> Result<Option<String>, String> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(index) {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<i32>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<u64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<f32>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<bool>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
+        return Ok(value.map(|v| format!("0x{}", hex::encode(v))));
+    }
+    Err(mysql_decode_error(
+        context,
+        column_name,
+        Some(index),
+        "unsupported value type",
+    ))
+}
+
+fn sqlite_value_to_string(row: &SqliteRow, index: usize, column_name: &str, context: &str) -> Result<Option<String>, String> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(index) {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<bool>, _>(index) {
+        return Ok(value.map(|v| v.to_string()));
+    }
+    if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
+        return Ok(value.map(|v| format!("0x{}", hex::encode(v))));
+    }
+    Err(sqlite_decode_error(
+        context,
+        column_name,
+        Some(index),
+        "unsupported value type",
+    ))
+}
+
+async fn run_query_mysql_or_sqlite(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    sql: &str,
+    max_query_rows: usize,
+    engine: DatabaseEngine,
+) -> Result<QueryResult, String> {
+    let started_at = Instant::now();
+    match engine {
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(app, state, connection_id).await?;
+            let rows = sqlx::query(sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut columns: Vec<String> = Vec::new();
+            if let Some(first) = rows.first() {
+                columns = first
+                    .columns()
+                    .iter()
+                    .map(|column| column.name().to_string())
+                    .collect();
+            }
+            let total_rows = rows.len();
+            let mut mapped_rows = Vec::new();
+            for row in rows.into_iter().take(max_query_rows) {
+                let mut mapped_row = BTreeMap::new();
+                for (index, column_name) in columns.iter().enumerate() {
+                    let value = mysql_value_to_string(&row, index, column_name, "run_query")?;
+                    mapped_row.insert(column_name.clone(), value);
+                }
+                mapped_rows.push(mapped_row);
+            }
+
+            Ok(QueryResult {
+                columns,
+                row_count: mapped_rows.len(),
+                rows: mapped_rows,
+                execution_ms: started_at.elapsed().as_millis(),
+                truncated: total_rows > max_query_rows,
+                command_tag: None,
+            })
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(app, state, connection_id).await?;
+            let rows = sqlx::query(sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut columns: Vec<String> = Vec::new();
+            if let Some(first) = rows.first() {
+                columns = first
+                    .columns()
+                    .iter()
+                    .map(|column| column.name().to_string())
+                    .collect();
+            }
+            let total_rows = rows.len();
+            let mut mapped_rows = Vec::new();
+            for row in rows.into_iter().take(max_query_rows) {
+                let mut mapped_row = BTreeMap::new();
+                for (index, column_name) in columns.iter().enumerate() {
+                    let value = sqlite_value_to_string(&row, index, column_name, "run_query")?;
+                    mapped_row.insert(column_name.clone(), value);
+                }
+                mapped_rows.push(mapped_row);
+            }
+
+            Ok(QueryResult {
+                columns,
+                row_count: mapped_rows.len(),
+                rows: mapped_rows,
+                execution_ms: started_at.elapsed().as_millis(),
+                truncated: total_rows > max_query_rows,
+                command_tag: None,
+            })
+        }
+        DatabaseEngine::Postgres => Err("Internal engine routing error.".to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn connect_db(
     app: AppHandle,
@@ -84,47 +281,96 @@ pub async fn connect_db(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let pool = if let Some(ref ssh_config) = input.ssh_config {
-        if ssh_config.is_active() {
-            let tunnel = match SshTunnel::connect(ssh_config, &input.host, input.port).await {
-                Ok(tunnel) => tunnel,
-                Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+    match input.engine {
+        DatabaseEngine::Postgres => {
+            let pool = if let Some(ref ssh_config) = input.ssh_config {
+                if ssh_config.is_active() {
+                    let tunnel = match SshTunnel::connect(ssh_config, &input.host, input.port).await {
+                        Ok(tunnel) => tunnel,
+                        Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+                    };
+                    let local_port = tunnel.local_port;
+                    state
+                        .ssh_tunnels
+                        .write()
+                        .await
+                        .insert(connection_id.clone(), tunnel);
+                    build_pool_custom("127.0.0.1", local_port, &input)?
+                } else {
+                    build_pool(&input)?
+                }
+            } else {
+                build_pool(&input)?
             };
-            let local_port = tunnel.local_port;
+
+            let client = match pool.get().await {
+                Ok(client) => client,
+                Err(e) => {
+                    drop_pool(&state, &connection_id).await;
+                    return Err(e.to_string());
+                }
+            };
+
+            if let Err(e) = client.simple_query("select 1").await {
+                drop_pool(&state, &connection_id).await;
+                return Err(e.to_string());
+            }
+
             state
-                .ssh_tunnels
+                .pools
                 .write()
                 .await
-                .insert(connection_id.clone(), tunnel);
-            build_pool_custom("127.0.0.1", local_port, &input)?
-        } else {
-            build_pool(&input)?
+                .insert(connection_id.clone(), pool);
         }
-    } else {
-        build_pool(&input)?
-    };
+        DatabaseEngine::Mysql => {
+            let pool = if let Some(ref ssh_config) = input.ssh_config {
+                if ssh_config.is_active() {
+                    let remote_port = if input.port == 0 { DEFAULT_MYSQL_PORT } else { input.port };
+                    let tunnel = match SshTunnel::connect(ssh_config, &input.host, remote_port).await {
+                        Ok(tunnel) => tunnel,
+                        Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+                    };
+                    let local_port = tunnel.local_port;
+                    state
+                        .ssh_tunnels
+                        .write()
+                        .await
+                        .insert(connection_id.clone(), tunnel);
+                    build_mysql_pool_custom("127.0.0.1", local_port, &input).await?
+                } else {
+                    build_mysql_pool(&input).await?
+                }
+            } else {
+                build_mysql_pool(&input).await?
+            };
 
-    let client = match pool.get().await {
-        Ok(client) => client,
-        Err(e) => {
-            drop_pool(&state, &connection_id).await;
-            return Err(e.to_string());
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            state
+                .mysql_pools
+                .write()
+                .await
+                .insert(connection_id.clone(), pool);
         }
-    };
-
-    if let Err(e) = client.simple_query("select 1").await {
-        drop_pool(&state, &connection_id).await;
-        return Err(e.to_string());
+        DatabaseEngine::Sqlite => {
+            let pool = build_sqlite_pool(&input).await?;
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            state
+                .sqlite_pools
+                .write()
+                .await
+                .insert(connection_id.clone(), pool);
+        }
     }
 
     let stored_connection = StoredConnection::from_input(connection_id.clone(), input.clone());
     persist_connection_with_password(&app, &stored_connection, &input.password)?;
-
-    state
-        .pools
-        .write()
-        .await
-        .insert(connection_id.clone(), pool);
 
     *state.active_connection_id.write().await = Some(connection_id);
 
@@ -145,14 +391,32 @@ pub async fn set_active_connection(
     let stored_connection = load_connection(&app, &connection_id)?
         .ok_or_else(|| "Stored connection details were not found.".to_string())?;
 
-    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
-        client
-            .simple_query("select 1")
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })
-    .await?;
+    match stored_connection.engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+                client
+                    .simple_query("select 1")
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await?;
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+    }
 
     *state.active_connection_id.write().await = Some(connection_id);
 
@@ -165,14 +429,36 @@ pub async fn ping_connection(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<(), String> {
-    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
-        client
-            .simple_query("select 1")
+    let stored_connection = load_connection(&app, &connection_id)?
+        .ok_or_else(|| "Stored connection details were not found.".to_string())?;
+    match stored_connection.engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+                client
+                    .simple_query("select 1")
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
             .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })
-    .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+    }
 }
 
 #[tauri::command]
@@ -204,26 +490,45 @@ pub async fn list_databases(
     state: State<'_, AppState>,
     connection_id: Option<String>,
 ) -> Result<Vec<DatabaseInfo>, String> {
-    let connection_id = resolve_connection_id(&state, connection_id).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, connection_id).await?;
 
-    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
-        let rows = client
-            .query(
-                "select datname from pg_database where datistemplate = false and has_database_privilege(datname, 'CONNECT') order by datname",
-                &[],
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+                let rows = client
+                    .query(
+                        "select datname from pg_database where datistemplate = false and has_database_privilege(datname, 'CONNECT') order by datname",
+                        &[],
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let name: String = row.get(0);
-                DatabaseInfo { name }
+                Ok(rows
+                    .into_iter()
+                    .map(|row| {
+                        let name: String = row.get(0);
+                        DatabaseInfo { name }
+                    })
+                    .collect())
             })
-            .collect())
-    })
-    .await
+            .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            let rows = sqlx::query("show databases")
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .filter_map(|row| row.try_get::<String, _>(0).ok())
+                .map(|name| DatabaseInfo { name })
+                .collect())
+        }
+        DatabaseEngine::Sqlite => Ok(vec![DatabaseInfo {
+            name: "main".to_string(),
+        }]),
+    }
 }
 
 #[tauri::command]
@@ -235,6 +540,10 @@ pub async fn switch_database(
     let mut stored_connection = load_connection(&app, &input.connection_id)?
         .ok_or_else(|| "Stored connection details were not found.".to_string())?;
 
+    if stored_connection.engine == DatabaseEngine::Sqlite {
+        return Err("Switch database is not supported for SQLite connections.".to_string());
+    }
+
     drop_pool(&state, &input.connection_id).await;
 
     stored_connection.database = input.database.clone();
@@ -243,44 +552,86 @@ pub async fn switch_database(
 
     let connection_input = stored_connection.to_input();
 
-    let pool = if let Some(ref ssh_config) = connection_input.ssh_config {
-        if ssh_config.is_active() {
-            let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, connection_input.port).await {
-                Ok(tunnel) => tunnel,
-                Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+    match connection_input.engine {
+        DatabaseEngine::Postgres => {
+            let pool = if let Some(ref ssh_config) = connection_input.ssh_config {
+                if ssh_config.is_active() {
+                    let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, connection_input.port).await {
+                        Ok(tunnel) => tunnel,
+                        Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+                    };
+                    let local_port = tunnel.local_port;
+                    state
+                        .ssh_tunnels
+                        .write()
+                        .await
+                        .insert(input.connection_id.clone(), tunnel);
+                    build_pool_custom("127.0.0.1", local_port, &connection_input)?
+                } else {
+                    build_pool(&connection_input)?
+                }
+            } else {
+                build_pool(&connection_input)?
             };
-            let local_port = tunnel.local_port;
+
+            let client = match pool.get().await {
+                Ok(client) => client,
+                Err(e) => {
+                    drop_pool(&state, &input.connection_id).await;
+                    return Err(e.to_string());
+                }
+            };
+
+            if let Err(e) = client.simple_query("select 1").await {
+                drop_pool(&state, &input.connection_id).await;
+                return Err(e.to_string());
+            }
+
             state
-                .ssh_tunnels
+                .pools
                 .write()
                 .await
-                .insert(input.connection_id.clone(), tunnel);
-            build_pool_custom("127.0.0.1", local_port, &connection_input)?
-        } else {
-            build_pool(&connection_input)?
+                .insert(input.connection_id.clone(), pool);
         }
-    } else {
-        build_pool(&connection_input)?
-    };
+        DatabaseEngine::Mysql => {
+            let pool = if let Some(ref ssh_config) = connection_input.ssh_config {
+                if ssh_config.is_active() {
+                    let remote_port = if connection_input.port == 0 {
+                        DEFAULT_MYSQL_PORT
+                    } else {
+                        connection_input.port
+                    };
+                    let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, remote_port).await {
+                        Ok(tunnel) => tunnel,
+                        Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
+                    };
+                    let local_port = tunnel.local_port;
+                    state
+                        .ssh_tunnels
+                        .write()
+                        .await
+                        .insert(input.connection_id.clone(), tunnel);
+                    build_mysql_pool_custom("127.0.0.1", local_port, &connection_input).await?
+                } else {
+                    build_mysql_pool(&connection_input).await?
+                }
+            } else {
+                build_mysql_pool(&connection_input).await?
+            };
 
-    let client = match pool.get().await {
-        Ok(client) => client,
-        Err(e) => {
-            drop_pool(&state, &input.connection_id).await;
-            return Err(e.to_string());
+            sqlx::query("select 1")
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            state
+                .mysql_pools
+                .write()
+                .await
+                .insert(input.connection_id.clone(), pool);
         }
-    };
-
-    if let Err(e) = client.simple_query("select 1").await {
-        drop_pool(&state, &input.connection_id).await;
-        return Err(e.to_string());
+        DatabaseEngine::Sqlite => {}
     }
-
-    state
-        .pools
-        .write()
-        .await
-        .insert(input.connection_id.clone(), pool);
 
     *state.active_connection_id.write().await = Some(input.connection_id);
 
@@ -293,7 +644,7 @@ pub async fn run_query(
     state: State<'_, AppState>,
     input: QueryRequest,
 ) -> Result<QueryResult, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id).await?;
     let sql = input.sql.trim().to_string();
 
     if sql.is_empty() {
@@ -302,66 +653,73 @@ pub async fn run_query(
 
     let max_query_rows = input.max_rows.unwrap_or(MAX_QUERY_ROWS);
 
-    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
-        let started_at = Instant::now();
-        let messages = client
-            .simple_query(&sql)
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+                let started_at = Instant::now();
+                let messages = client
+                    .simple_query(&sql)
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                let mut columns = Vec::new();
+                let mut rows = Vec::new();
+                let mut total_rows = 0usize;
+                let mut command_tag = None;
+
+                for message in messages {
+                    match message {
+                        SimpleQueryMessage::RowDescription(description) => {
+                            if columns.is_empty() {
+                                columns = description
+                                    .iter()
+                                    .map(|column| column.name().to_string())
+                                    .collect();
+                            }
+                        }
+                        SimpleQueryMessage::Row(row) => {
+                            total_rows += 1;
+
+                            if columns.is_empty() {
+                                columns = row
+                                    .columns()
+                                    .iter()
+                                    .map(|column| column.name().to_string())
+                                    .collect();
+                            }
+
+                            if rows.len() >= max_query_rows {
+                                continue;
+                            }
+
+                            let mut mapped_row = BTreeMap::new();
+                            for (index, column_name) in columns.iter().enumerate() {
+                                mapped_row.insert(column_name.clone(), row.get(index).map(str::to_owned));
+                            }
+                            rows.push(mapped_row);
+                        }
+                        SimpleQueryMessage::CommandComplete(count) => {
+                            command_tag = Some(count);
+                        }
+                        _ => {}
+                    }
+                }
+
+                Ok(QueryResult {
+                    columns,
+                    row_count: rows.len(),
+                    rows,
+                    execution_ms: started_at.elapsed().as_millis(),
+                    truncated: total_rows > max_query_rows,
+                    command_tag,
+                })
+            })
             .await
-            .map_err(|error| error.to_string())?;
-
-        let mut columns = Vec::new();
-        let mut rows = Vec::new();
-        let mut total_rows = 0usize;
-        let mut command_tag = None;
-
-        for message in messages {
-            match message {
-                SimpleQueryMessage::RowDescription(description) => {
-                    if columns.is_empty() {
-                        columns = description
-                            .iter()
-                            .map(|column| column.name().to_string())
-                            .collect();
-                    }
-                }
-                SimpleQueryMessage::Row(row) => {
-                    total_rows += 1;
-
-                    if columns.is_empty() {
-                        columns = row
-                            .columns()
-                            .iter()
-                            .map(|column| column.name().to_string())
-                            .collect();
-                    }
-
-                    if rows.len() >= max_query_rows {
-                        continue;
-                    }
-
-                    let mut mapped_row = BTreeMap::new();
-                    for (index, column_name) in columns.iter().enumerate() {
-                        mapped_row.insert(column_name.clone(), row.get(index).map(str::to_owned));
-                    }
-                    rows.push(mapped_row);
-                }
-                SimpleQueryMessage::CommandComplete(count) => {
-                    command_tag = Some(count);
-                }
-                _ => {}
-            }
         }
-
-        Ok(QueryResult {
-            columns,
-            row_count: rows.len(),
-            rows,
-            execution_ms: started_at.elapsed().as_millis(),
-            truncated: total_rows > max_query_rows,
-            command_tag,
-        })
-    })
-    .await
+        DatabaseEngine::Mysql | DatabaseEngine::Sqlite => {
+            run_query_mysql_or_sqlite(&app, &state, &connection_id, &sql, max_query_rows, engine).await
+        }
+    }
 }
 
 #[tauri::command]
@@ -370,7 +728,119 @@ pub async fn get_query_editor_metadata(
     state: State<'_, AppState>,
     connection_id: Option<String>,
 ) -> Result<QueryEditorMetadata, String> {
-    let connection_id = resolve_connection_id(&state, connection_id).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, connection_id).await?;
+
+    if engine == DatabaseEngine::Mysql {
+        let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+        let table_rows = sqlx::query(
+            "
+            select table_schema, table_name
+            from information_schema.tables
+            where table_type = 'BASE TABLE'
+              and table_schema not in ('information_schema', 'mysql', 'performance_schema', 'sys')
+            order by table_schema, table_name
+            limit ?
+            ",
+        )
+        .bind(MAX_EDITOR_TABLES + 1)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        let truncated_tables = table_rows.len() as i64 > MAX_EDITOR_TABLES;
+        let mut tables = Vec::new();
+        let mut truncated_columns = false;
+
+        for row in table_rows.into_iter().take(MAX_EDITOR_TABLES as usize) {
+            let schema: String = mysql_get_idx(&row, 0, "table_schema", "get_query_editor_metadata")?;
+            let name: String = mysql_get_idx(&row, 1, "table_name", "get_query_editor_metadata")?;
+            let column_rows = sqlx::query(
+                "
+                select column_name, data_type
+                from information_schema.columns
+                where table_schema = ? and table_name = ?
+                order by ordinal_position
+                limit ?
+                ",
+            )
+            .bind(&schema)
+            .bind(&name)
+            .bind(MAX_EDITOR_COLUMNS_PER_TABLE + 1)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            if column_rows.len() as i64 > MAX_EDITOR_COLUMNS_PER_TABLE {
+                truncated_columns = true;
+            }
+            let mut columns = Vec::new();
+            for column in column_rows.into_iter().take(MAX_EDITOR_COLUMNS_PER_TABLE as usize) {
+                columns.push(QueryEditorColumn {
+                    name: mysql_get_idx(&column, 0, "column_name", "get_query_editor_metadata")?,
+                    data_type: mysql_get_idx(&column, 1, "data_type", "get_query_editor_metadata")?,
+                });
+            }
+            tables.push(QueryEditorTable { schema, name, columns });
+        }
+
+        return Ok(QueryEditorMetadata {
+            tables,
+            functions: Vec::new(),
+            truncated_tables,
+            truncated_columns,
+            truncated_functions: false,
+        });
+    }
+
+    if engine == DatabaseEngine::Sqlite {
+        let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+        let table_rows = sqlx::query(
+            "
+            select name
+            from sqlite_master
+            where type = 'table'
+              and name not like 'sqlite_%'
+            order by name
+            limit ?
+            ",
+        )
+        .bind(MAX_EDITOR_TABLES + 1)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let truncated_tables = table_rows.len() as i64 > MAX_EDITOR_TABLES;
+        let mut tables = Vec::new();
+        let mut truncated_columns = false;
+        for row in table_rows.into_iter().take(MAX_EDITOR_TABLES as usize) {
+            let name: String = sqlite_get_idx(&row, 0, "name", "get_query_editor_metadata")?;
+            let pragma_sql = format!("PRAGMA table_info(\"{}\");", quote_identifier(&name));
+            let column_rows = sqlx::query(&pragma_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            if column_rows.len() as i64 > MAX_EDITOR_COLUMNS_PER_TABLE {
+                truncated_columns = true;
+            }
+            let mut columns = Vec::new();
+            for column in column_rows.into_iter().take(MAX_EDITOR_COLUMNS_PER_TABLE as usize) {
+                columns.push(QueryEditorColumn {
+                    name: sqlite_get_name(&column, "name", "get_query_editor_metadata")?,
+                    data_type: sqlite_get_name(&column, "type", "get_query_editor_metadata")?,
+                });
+            }
+            tables.push(QueryEditorTable {
+                schema: "main".to_string(),
+                name,
+                columns,
+            });
+        }
+        return Ok(QueryEditorMetadata {
+            tables,
+            functions: Vec::new(),
+            truncated_tables,
+            truncated_columns,
+            truncated_functions: false,
+        });
+    }
 
     with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
         let table_rows = client
@@ -503,7 +973,7 @@ pub async fn lint_sql(
     state: State<'_, AppState>,
     input: LintSqlRequest,
 ) -> Result<LintSqlResult, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     let sql = input.sql.trim().to_string();
     if sql.is_empty() {
         return Ok(LintSqlResult {
@@ -514,25 +984,61 @@ pub async fn lint_sql(
         return Err("SQL is too large to lint in the editor.".to_string());
     }
 
-    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
-        let lint_sql = format!("EXPLAIN {}", sql);
-        let diagnostics = match client.simple_query(&lint_sql).await {
-            Ok(_) => Vec::new(),
-            Err(error) => {
-                let (line, column) = lint_error_range(&error, &sql);
-                vec![SqlDiagnostic {
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+                let lint_sql = format!("EXPLAIN {}", sql);
+                let diagnostics = match client.simple_query(&lint_sql).await {
+                    Ok(_) => Vec::new(),
+                    Err(error) => {
+                        let (line, column) = lint_error_range(&error, &sql);
+                        vec![SqlDiagnostic {
+                            message: error.to_string(),
+                            severity: "error".to_string(),
+                            line,
+                            column,
+                            end_line: line,
+                            end_column: column.map(|value| value + 1),
+                        }]
+                    }
+                };
+                Ok(LintSqlResult { diagnostics })
+            })
+            .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            let lint_sql = format!("EXPLAIN {}", sql);
+            let diagnostics = match sqlx::query(&lint_sql).execute(&pool).await {
+                Ok(_) => Vec::new(),
+                Err(error) => vec![SqlDiagnostic {
                     message: error.to_string(),
                     severity: "error".to_string(),
-                    line,
-                    column,
-                    end_line: line,
-                    end_column: column.map(|value| value + 1),
-                }]
-            }
-        };
-        Ok(LintSqlResult { diagnostics })
-    })
-    .await
+                    line: None,
+                    column: None,
+                    end_line: None,
+                    end_column: None,
+                }],
+            };
+            Ok(LintSqlResult { diagnostics })
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            let lint_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+            let diagnostics = match sqlx::query(&lint_sql).execute(&pool).await {
+                Ok(_) => Vec::new(),
+                Err(error) => vec![SqlDiagnostic {
+                    message: error.to_string(),
+                    severity: "error".to_string(),
+                    line: None,
+                    column: None,
+                    end_line: None,
+                    end_column: None,
+                }],
+            };
+            Ok(LintSqlResult { diagnostics })
+        }
+    }
 }
 
 #[tauri::command]
@@ -541,43 +1047,98 @@ pub async fn get_tables(
     state: State<'_, AppState>,
     connection_id: Option<String>,
 ) -> Result<Vec<TableInfo>, String> {
-    let connection_id = resolve_connection_id(&state, connection_id).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, connection_id).await?;
 
-    with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
-        let rows = client
-            .query(
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
+                let rows = client
+                    .query(
+                        "
+                    select table_schema, table_name
+                    from information_schema.tables
+                    where table_type = 'BASE TABLE'
+                      and table_schema not in ('pg_catalog', 'information_schema')
+                    order by table_schema, table_name
+                    ",
+                        &[],
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                Ok(rows
+                    .into_iter()
+                    .map(|row| {
+                        let schema: String = row.get(0);
+                        let name: String = row.get(1);
+                        let preview_query = format!(
+                            "select * from \"{}\".\"{}\" limit 100;",
+                            quote_identifier(&schema),
+                            quote_identifier(&name)
+                        );
+
+                        TableInfo {
+                            schema,
+                            name,
+                            preview_query,
+                        }
+                    })
+                    .collect())
+            })
+            .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            let rows = sqlx::query(
                 "
-            select table_schema, table_name
-            from information_schema.tables
-            where table_type = 'BASE TABLE'
-              and table_schema not in ('pg_catalog', 'information_schema')
-            order by table_schema, table_name
-            ",
-                &[],
+                select table_schema, table_name
+                from information_schema.tables
+                where table_type = 'BASE TABLE'
+                  and table_schema not in ('information_schema', 'mysql', 'performance_schema', 'sys')
+                order by table_schema, table_name
+                ",
             )
+            .fetch_all(&pool)
             .await
             .map_err(|error| error.to_string())?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let schema: String = row.get(0);
-                let name: String = row.get(1);
-                let preview_query = format!(
-                    "select * from \"{}\".\"{}\" limit 100;",
-                    quote_identifier(&schema),
-                    quote_identifier(&name)
-                );
-
-                TableInfo {
+            let mut tables = Vec::new();
+            for row in rows {
+                let schema: String = mysql_get_idx(&row, 0, "table_schema", "get_tables")?;
+                let name: String = mysql_get_idx(&row, 1, "table_name", "get_tables")?;
+                tables.push(TableInfo {
+                    preview_query: format!("select * from `{}`.`{}` limit 100;", schema, name),
                     schema,
                     name,
-                    preview_query,
-                }
-            })
-            .collect())
-    })
-    .await
+                });
+            }
+            Ok(tables)
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            let rows = sqlx::query(
+                "
+                select name
+                from sqlite_master
+                where type = 'table'
+                  and name not like 'sqlite_%'
+                order by name
+                ",
+            )
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            let mut tables = Vec::new();
+            for row in rows {
+                let name: String = sqlite_get_idx(&row, 0, "name", "get_tables")?;
+                tables.push(TableInfo {
+                    schema: "main".to_string(),
+                    preview_query: format!("select * from \"{}\" limit 100;", quote_identifier(&name)),
+                    name,
+                });
+            }
+            Ok(tables)
+        }
+    }
 }
 
 #[tauri::command]
@@ -586,41 +1147,97 @@ pub async fn get_schema(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     let schema_request = input.clone();
 
-    with_pool_client_retry(
-        &app,
-        &state,
-        &connection_id,
-        schema_request,
-        |client, input| async move {
-            let rows = client
-                .query(
-                    "
-            select table_schema, table_name, column_name, data_type, is_nullable
-            from information_schema.columns
-            where table_schema = $1 and table_name = $2
-            order by ordinal_position
-            ",
-                    &[&input.table_schema, &input.table_name],
-                )
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(
+                &app,
+                &state,
+                &connection_id,
+                schema_request,
+                |client, input| async move {
+                    let rows = client
+                        .query(
+                            "
+                    select table_schema, table_name, column_name, data_type, is_nullable
+                    from information_schema.columns
+                    where table_schema = $1 and table_name = $2
+                    order by ordinal_position
+                    ",
+                            &[&input.table_schema, &input.table_name],
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    Ok(rows
+                        .into_iter()
+                        .map(|row| ColumnInfo {
+                            table_schema: row.get(0),
+                            table_name: row.get(1),
+                            column_name: row.get(2),
+                            data_type: row.get(3),
+                            is_nullable: row.get::<_, String>(4) == "YES",
+                        })
+                        .collect())
+                },
+            )
+            .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            let rows = sqlx::query(
+                "
+                select table_schema, table_name, column_name, data_type, is_nullable
+                from information_schema.columns
+                where table_schema = ? and table_name = ?
+                order by ordinal_position
+                ",
+            )
+            .bind(&schema_request.table_schema)
+            .bind(&schema_request.table_name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            let mut columns = Vec::new();
+            for row in rows {
+                columns.push(ColumnInfo {
+                    table_schema: mysql_get_idx(&row, 0, "table_schema", "get_schema")?,
+                    table_name: mysql_get_idx(&row, 1, "table_name", "get_schema")?,
+                    column_name: mysql_get_idx(&row, 2, "column_name", "get_schema")?,
+                    data_type: mysql_get_idx(&row, 3, "data_type", "get_schema")?,
+                    is_nullable: mysql_get_idx::<String>(&row, 4, "is_nullable", "get_schema")? == "YES",
+                });
+            }
+            Ok(columns)
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            let pragma_sql = format!(
+                "PRAGMA table_info(\"{}\");",
+                quote_identifier(&schema_request.table_name)
+            );
+            let rows = sqlx::query(&pragma_sql)
+                .fetch_all(&pool)
                 .await
                 .map_err(|error| error.to_string())?;
-
-            Ok(rows
-                .into_iter()
-                .map(|row| ColumnInfo {
-                    table_schema: row.get(0),
-                    table_name: row.get(1),
-                    column_name: row.get(2),
-                    data_type: row.get(3),
-                    is_nullable: row.get::<_, String>(4) == "YES",
-                })
-                .collect())
-        },
-    )
-    .await
+            let mut columns = Vec::new();
+            for row in rows {
+                let col_name: String = sqlite_get_name(&row, "name", "get_schema")?;
+                let col_type: String = sqlite_get_name(&row, "type", "get_schema")?;
+                let notnull: i64 = sqlite_get_name(&row, "notnull", "get_schema")?;
+                columns.push(ColumnInfo {
+                    table_schema: "main".to_string(),
+                    table_name: schema_request.table_name.clone(),
+                    column_name: col_name,
+                    data_type: col_type,
+                    is_nullable: notnull == 0,
+                });
+            }
+            Ok(columns)
+        }
+    }
 }
 
 fn veloxdb_unique_constraint_name(table_name: &str, column_name: &str) -> String {
@@ -641,8 +1258,187 @@ pub async fn get_table_properties(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<Vec<ColumnProperties>, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     let ctx = input.clone();
+
+    if engine == DatabaseEngine::Mysql {
+        let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+        let rows = sqlx::query(
+            "
+            select
+              c.table_schema,
+              c.table_name,
+              c.column_name,
+              c.data_type,
+              c.is_nullable,
+              c.column_default,
+              c.extra
+            from information_schema.columns c
+            where c.table_schema = ? and c.table_name = ?
+            order by c.ordinal_position
+            ",
+        )
+        .bind(&ctx.table_schema)
+        .bind(&ctx.table_name)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        let pk_rows = sqlx::query(
+            "
+            select column_name
+            from information_schema.key_column_usage
+            where table_schema = ? and table_name = ? and constraint_name = 'PRIMARY'
+            ",
+        )
+        .bind(&ctx.table_schema)
+        .bind(&ctx.table_name)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let pk_cols: HashSet<String> = pk_rows
+            .into_iter()
+            .map(|row| mysql_get_idx::<String>(&row, 0, "column_name", "get_table_properties"))
+            .collect::<Result<HashSet<_>, _>>()?;
+
+        let unique_rows = sqlx::query(
+            "
+            select index_name, column_name, seq_in_index
+            from information_schema.statistics
+            where table_schema = ?
+              and table_name = ?
+              and non_unique = 0
+            order by index_name, seq_in_index
+            ",
+        )
+        .bind(&ctx.table_schema)
+        .bind(&ctx.table_name)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut unique_by_index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in unique_rows {
+            let index_name: String = mysql_get_idx(&row, 0, "index_name", "get_table_properties")?;
+            if index_name == "PRIMARY" {
+                continue;
+            }
+            let column_name: String = mysql_get_idx(&row, 1, "column_name", "get_table_properties")?;
+            unique_by_index.entry(index_name).or_default().push(column_name);
+        }
+        let mut unique_cols: HashSet<String> = HashSet::new();
+        let mut composite_unique_cols: HashSet<String> = HashSet::new();
+        for cols in unique_by_index.values() {
+            for col in cols {
+                unique_cols.insert(col.clone());
+            }
+            if cols.len() > 1 {
+                for col in cols {
+                    composite_unique_cols.insert(col.clone());
+                }
+            }
+        }
+
+        let mut properties = Vec::new();
+        for row in rows {
+                let column_name: String = mysql_get_idx(&row, 2, "column_name", "get_table_properties")?;
+                let is_primary_key = pk_cols.contains(&column_name);
+                let is_unique = is_primary_key || unique_cols.contains(&column_name);
+                let is_part_of_composite_unique = composite_unique_cols.contains(&column_name);
+                let extra: String = mysql_get_idx(&row, 6, "extra", "get_table_properties")?;
+                let lower_extra = extra.to_lowercase();
+                properties.push(ColumnProperties {
+                    table_schema: mysql_get_idx(&row, 0, "table_schema", "get_table_properties")?,
+                    table_name: mysql_get_idx(&row, 1, "table_name", "get_table_properties")?,
+                    column_name,
+                    data_type: mysql_get_idx(&row, 3, "data_type", "get_table_properties")?,
+                    is_nullable: mysql_get_idx::<String>(&row, 4, "is_nullable", "get_table_properties")? == "YES",
+                    is_primary_key,
+                    is_unique,
+                    is_part_of_composite_unique,
+                    column_default: mysql_get_idx::<Option<String>>(&row, 5, "column_default", "get_table_properties")?,
+                    is_identity: lower_extra.contains("auto_increment"),
+                    identity_generation: if lower_extra.contains("auto_increment") {
+                        Some("BY DEFAULT".to_string())
+                    } else {
+                        None
+                    },
+                    is_generated: if lower_extra.contains("generated") {
+                        Some("ALWAYS".to_string())
+                    } else {
+                        None
+                    },
+                });
+            }
+        return Ok(properties);
+    }
+
+    if engine == DatabaseEngine::Sqlite {
+        let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+        let pragma_sql = format!("PRAGMA table_info(\"{}\");", quote_identifier(&ctx.table_name));
+        let rows = sqlx::query(&pragma_sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+        let index_list_sql = format!("PRAGMA index_list(\"{}\");", quote_identifier(&ctx.table_name));
+        let index_rows = sqlx::query(&index_list_sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut unique_cols: HashSet<String> = HashSet::new();
+        let mut composite_unique_cols: HashSet<String> = HashSet::new();
+        for index in index_rows {
+            let is_unique = sqlite_get_name::<i64>(&index, "unique", "get_table_properties")? == 1;
+            if !is_unique {
+                continue;
+            }
+            let origin = sqlite_get_name::<String>(&index, "origin", "get_table_properties")?;
+            if origin == "pk" {
+                continue;
+            }
+            let index_name = sqlite_get_name::<String>(&index, "name", "get_table_properties")?;
+            let info_sql = format!("PRAGMA index_info(\"{}\");", quote_identifier(&index_name));
+            let info_rows = sqlx::query(&info_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut cols: Vec<String> = Vec::new();
+            for info in info_rows {
+                if let Ok(name) = sqlite_get_name::<String>(&info, "name", "get_table_properties") {
+                    cols.push(name);
+                }
+            }
+            for col in &cols {
+                unique_cols.insert(col.clone());
+            }
+            if cols.len() > 1 {
+                for col in cols {
+                    composite_unique_cols.insert(col);
+                }
+            }
+        }
+        let mut properties = Vec::new();
+        for row in rows {
+                let column_name: String = sqlite_get_name(&row, "name", "get_table_properties")?;
+                let is_primary_key = sqlite_get_name::<i64>(&row, "pk", "get_table_properties")? == 1;
+                let is_unique = is_primary_key || unique_cols.contains(&column_name);
+                let is_part_of_composite_unique = composite_unique_cols.contains(&column_name);
+                properties.push(ColumnProperties {
+                    table_schema: "main".to_string(),
+                    table_name: ctx.table_name.clone(),
+                    column_name,
+                    data_type: sqlite_get_name(&row, "type", "get_table_properties")?,
+                    is_nullable: sqlite_get_name::<i64>(&row, "notnull", "get_table_properties")? == 0,
+                    is_primary_key,
+                    is_unique,
+                    is_part_of_composite_unique,
+                    column_default: sqlite_get_name::<Option<String>>(&row, "dflt_value", "get_table_properties")?,
+                    is_identity: false,
+                    identity_generation: None,
+                    is_generated: None,
+                });
+            }
+        return Ok(properties);
+    }
 
     with_pool_client_retry(&app, &state, &connection_id, ctx, |client, input| async move {
         let columns = client
@@ -772,7 +1568,17 @@ pub async fn apply_table_properties(
     state: State<'_, AppState>,
     input: TablePropertiesApplyRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
+    if engine != DatabaseEngine::Postgres {
+        return Err(format!(
+            "Table property editing is not supported for {} connections yet.",
+            match engine {
+                DatabaseEngine::Postgres => "PostgreSQL",
+                DatabaseEngine::Mysql => "MySQL",
+                DatabaseEngine::Sqlite => "SQLite",
+            }
+        ));
+    }
 
     with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
         let table_schema = input.table_schema;
@@ -997,7 +1803,80 @@ pub async fn get_foreign_keys(
     state: State<'_, AppState>,
     connection_id: Option<String>,
 ) -> Result<Vec<ForeignKeyEdge>, String> {
-    let connection_id = resolve_connection_id(&state, connection_id).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, connection_id).await?;
+
+    if engine == DatabaseEngine::Mysql {
+        let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+        let rows = sqlx::query(
+            "
+            select
+              kcu.table_schema as from_schema,
+              kcu.table_name as from_table,
+              kcu.column_name as from_column,
+              kcu.referenced_table_schema as to_schema,
+              kcu.referenced_table_name as to_table,
+              kcu.referenced_column_name as to_column
+            from information_schema.key_column_usage kcu
+            where kcu.referenced_table_name is not null
+            order by kcu.table_schema, kcu.table_name, kcu.ordinal_position
+            limit ?
+            ",
+        )
+        .bind(MAX_FOREIGN_KEY_ROWS)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut edges = Vec::new();
+        for row in rows {
+            edges.push(ForeignKeyEdge {
+                from_schema: mysql_get_idx(&row, 0, "from_schema", "get_foreign_keys")?,
+                from_table: mysql_get_idx(&row, 1, "from_table", "get_foreign_keys")?,
+                from_column: mysql_get_idx(&row, 2, "from_column", "get_foreign_keys")?,
+                to_schema: mysql_get_idx(&row, 3, "to_schema", "get_foreign_keys")?,
+                to_table: mysql_get_idx(&row, 4, "to_table", "get_foreign_keys")?,
+                to_column: mysql_get_idx(&row, 5, "to_column", "get_foreign_keys")?,
+            });
+        }
+        return Ok(edges);
+    }
+
+    if engine == DatabaseEngine::Sqlite {
+        let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+        let tables = sqlx::query(
+            "
+            select name
+            from sqlite_master
+            where type = 'table'
+              and name not like 'sqlite_%'
+            ",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut edges = Vec::new();
+        for table in tables {
+            let table_name: String = sqlite_get_idx(&table, 0, "name", "get_foreign_keys")?;
+            let fk_sql = format!("PRAGMA foreign_key_list(\"{}\");", quote_identifier(&table_name));
+            let fk_rows = sqlx::query(&fk_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            for row in fk_rows {
+                edges.push(ForeignKeyEdge {
+                    from_schema: "main".to_string(),
+                    from_table: table_name.clone(),
+                    from_column: sqlite_get_name(&row, "from", "get_foreign_keys")?,
+                    to_schema: "main".to_string(),
+                    to_table: sqlite_get_name(&row, "table", "get_foreign_keys")?,
+                    to_column: sqlite_get_name(&row, "to", "get_foreign_keys")?,
+                });
+                if edges.len() >= MAX_FOREIGN_KEY_ROWS as usize {
+                    return Ok(edges);
+                }
+            }
+        }
+        return Ok(edges);
+    }
 
     with_pool_client_retry(&app, &state, &connection_id, (), |client, ()| async move {
         let rows = client
@@ -1055,8 +1934,109 @@ pub async fn get_table_indexes(
     state: State<'_, AppState>,
     input: SchemaRequest,
 ) -> Result<TableIndexesResult, String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     let ctx = input.clone();
+
+    if engine == DatabaseEngine::Mysql {
+        let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+        let fetch_limit = MAX_TABLE_INDEX_ROWS + 1;
+        let rows = sqlx::query(
+            "
+            select
+              table_schema as index_schema,
+              index_name,
+              table_schema,
+              table_name,
+              non_unique = 0 as is_unique,
+              index_name = 'PRIMARY' as is_primary,
+              true as is_valid,
+              false as is_partial,
+              concat(index_name, ' (', group_concat(column_name order by seq_in_index separator ', '), ')') as definition,
+              0 as index_bytes,
+              0 as idx_scan,
+              0 as idx_tup_read,
+              0 as idx_tup_fetch
+            from information_schema.statistics
+            where table_schema = ?
+              and table_name = ?
+            group by table_schema, table_name, index_name, non_unique
+            order by index_name
+            limit ?
+            ",
+        )
+        .bind(&ctx.table_schema)
+        .bind(&ctx.table_name)
+        .bind(fetch_limit)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let truncated = rows.len() as i64 > MAX_TABLE_INDEX_ROWS;
+        let mut indexes = Vec::new();
+        for row in rows.into_iter().take(MAX_TABLE_INDEX_ROWS as usize) {
+            indexes.push(IndexInfo {
+                index_schema: mysql_get_idx(&row, 0, "index_schema", "get_table_indexes")?,
+                index_name: mysql_get_idx(&row, 1, "index_name", "get_table_indexes")?,
+                table_schema: mysql_get_idx(&row, 2, "table_schema", "get_table_indexes")?,
+                table_name: mysql_get_idx(&row, 3, "table_name", "get_table_indexes")?,
+                is_unique: mysql_get_idx(&row, 4, "is_unique", "get_table_indexes")?,
+                is_primary: mysql_get_idx(&row, 5, "is_primary", "get_table_indexes")?,
+                is_valid: true,
+                is_partial: false,
+                definition: mysql_get_idx(&row, 8, "definition", "get_table_indexes")?,
+                index_bytes: 0,
+                idx_scan: 0,
+                idx_tup_read: 0,
+                idx_tup_fetch: 0,
+            });
+        }
+        return Ok(TableIndexesResult { indexes, truncated });
+    }
+
+    if engine == DatabaseEngine::Sqlite {
+        let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+        let pragma_sql = format!(
+            "PRAGMA index_list(\"{}\");",
+            quote_identifier(&ctx.table_name)
+        );
+        let rows = sqlx::query(&pragma_sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+        let truncated = rows.len() as i64 > MAX_TABLE_INDEX_ROWS;
+        let mut indexes = Vec::new();
+        for row in rows.into_iter().take(MAX_TABLE_INDEX_ROWS as usize) {
+            let index_name: String = sqlite_get_name(&row, "name", "get_table_indexes")?;
+            let index_info_sql = format!("PRAGMA index_info(\"{}\");", quote_identifier(&index_name));
+            let index_info_rows = sqlx::query(&index_info_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let index_columns = index_info_rows
+                .into_iter()
+                .filter_map(|idx| sqlite_get_name::<String>(&idx, "name", "get_table_indexes").ok())
+                .collect::<Vec<_>>();
+            indexes.push(IndexInfo {
+                index_schema: "main".to_string(),
+                index_name: index_name.clone(),
+                table_schema: "main".to_string(),
+                table_name: ctx.table_name.clone(),
+                is_unique: sqlite_get_name::<i64>(&row, "unique", "get_table_indexes")? == 1,
+                is_primary: sqlite_get_name::<String>(&row, "origin", "get_table_indexes")? == "pk",
+                is_valid: true,
+                is_partial: sqlite_get_name::<i64>(&row, "partial", "get_table_indexes")? == 1,
+                definition: if index_columns.is_empty() {
+                    format!("index {}", index_name)
+                } else {
+                    format!("index {} ({})", index_name, index_columns.join(", "))
+                },
+                index_bytes: 0,
+                idx_scan: 0,
+                idx_tup_read: 0,
+                idx_tup_fetch: 0,
+            });
+        }
+        return Ok(TableIndexesResult { indexes, truncated });
+    }
 
     with_pool_client_retry(&app, &state, &connection_id, ctx, |client, input| async move {
         let table_schema = input.table_schema;
@@ -1134,30 +2114,66 @@ pub async fn execute_ddl_transaction(
     state: State<'_, AppState>,
     input: DdlBatchRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
 
-    with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
-        let stmts: Vec<String> = input
-            .statements
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
+                let stmts: Vec<String> = input
+                    .statements
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
 
-        if stmts.is_empty() {
-            return Err("No SQL statements to execute.".to_string());
+                if stmts.is_empty() {
+                    return Err("No SQL statements to execute.".to_string());
+                }
+
+                let txn = client.transaction().await.map_err(|error| error.to_string())?;
+                for sql in &stmts {
+                    txn.execute(sql.as_str(), &[])
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                txn.commit().await.map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await
         }
-
-        let txn = client.transaction().await.map_err(|error| error.to_string())?;
-        for sql in &stmts {
-            txn.execute(sql.as_str(), &[])
-                .await
-                .map_err(|error| error.to_string())?;
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+            for sql in input
+                .statements
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                sqlx::query(sql)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            tx.commit().await.map_err(|error| error.to_string())
         }
-        txn.commit().await.map_err(|error| error.to_string())?;
-        Ok(())
-    })
-    .await
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+            for sql in input
+                .statements
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                sqlx::query(sql)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            tx.commit().await.map_err(|error| error.to_string())
+        }
+    }
 }
 
 /// Run a single DDL statement outside an explicit transaction (required for `CREATE INDEX CONCURRENTLY`).
@@ -1167,20 +2183,40 @@ pub async fn execute_ddl_statement(
     state: State<'_, AppState>,
     input: DdlStatementRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(&state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     let sql = input.statement.trim().to_string();
     if sql.is_empty() {
         return Err("No SQL statement to execute.".to_string());
     }
 
-    with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
-        client
-            .execute(sql.as_str(), &[])
+    match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(&app, &state, &connection_id, sql, |client, sql| async move {
+                client
+                    .execute(sql.as_str(), &[])
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
             .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })
-    .await
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(&app, &state, &connection_id).await?;
+            sqlx::query(&sql)
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(&app, &state, &connection_id).await?;
+            sqlx::query(&sql)
+                .execute(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+    }
 }
 
 #[tauri::command]
@@ -1224,4 +2260,25 @@ pub async fn save_base64_png(data: String, output_path: String) -> Result<(), St
 #[tauri::command]
 pub async fn save_text_file(content: String, output_path: String) -> Result<(), String> {
     std::fs::write(&output_path, content).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mysql_decode_error, sqlite_decode_error};
+
+    #[test]
+    fn mysql_decode_error_is_explicit() {
+        let message = mysql_decode_error("get_tables", "table_schema", Some(0), "mismatched types");
+        assert!(message.contains("MySQL decode error"));
+        assert!(message.contains("get_tables"));
+        assert!(message.contains("table_schema"));
+    }
+
+    #[test]
+    fn sqlite_decode_error_is_explicit() {
+        let message = sqlite_decode_error("get_schema", "name", Some(0), "unsupported value type");
+        assert!(message.contains("SQLite decode error"));
+        assert!(message.contains("get_schema"));
+        assert!(message.contains("name"));
+    }
 }

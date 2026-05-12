@@ -19,6 +19,19 @@ fn default_connection_ssl_mode() -> ConnectionSslMode {
     ConnectionSslMode::Prefer
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseEngine {
+    #[default]
+    Postgres,
+    Mysql,
+    Sqlite,
+}
+
+fn default_database_engine() -> DatabaseEngine {
+    DatabaseEngine::Postgres
+}
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -65,9 +78,13 @@ impl SshConfig {
 pub struct ConnectionInput {
     pub id: Option<String>,
     pub name: String,
+    #[serde(default = "default_database_engine")]
+    pub engine: DatabaseEngine,
     pub host: String,
     pub port: u16,
     pub database: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     pub user: String,
     pub password: String,
     #[serde(default = "default_connection_ssl_mode")]
@@ -83,9 +100,13 @@ pub struct ConnectionInput {
 pub struct StoredConnection {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_database_engine")]
+    pub engine: DatabaseEngine,
     pub host: String,
     pub port: u16,
     pub database: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     pub user: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -103,9 +124,13 @@ pub struct StoredConnection {
 pub struct ConnectionSummary {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_database_engine")]
+    pub engine: DatabaseEngine,
     pub host: String,
     pub port: u16,
     pub database: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     pub user: String,
     pub connected_at: String,
     #[serde(default = "default_connection_ssl_mode")]
@@ -114,6 +139,8 @@ pub struct ConnectionSummary {
     pub ssh_config: Option<SshConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_params: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub table_property_editing_supported: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -328,9 +355,11 @@ impl StoredConnection {
         Self {
             id,
             name: input.name,
+            engine: input.engine,
             host: input.host,
             port: input.port,
             database: input.database,
+            file_path: input.file_path,
             user: input.user,
             password: None,
             connected_at: timestamp_string(),
@@ -344,14 +373,17 @@ impl StoredConnection {
         ConnectionSummary {
             id: self.id.clone(),
             name: self.name.clone(),
+            engine: self.engine,
             host: self.host.clone(),
             port: self.port,
             database: self.database.clone(),
+            file_path: self.file_path.clone(),
             user: self.user.clone(),
             connected_at: self.connected_at.clone(),
             ssl_mode: self.ssl_mode,
             ssh_config: self.ssh_config.clone(),
             extra_params: self.extra_params.clone(),
+            table_property_editing_supported: self.engine == DatabaseEngine::Postgres,
         }
     }
 
@@ -359,9 +391,11 @@ impl StoredConnection {
         ConnectionInput {
             id: Some(self.id.clone()),
             name: self.name.clone(),
+            engine: self.engine,
             host: self.host.clone(),
             port: self.port,
             database: self.database.clone(),
+            file_path: self.file_path.clone(),
             user: self.user.clone(),
             password: self.password.clone().unwrap_or_default(),
             ssl_mode: self.ssl_mode,

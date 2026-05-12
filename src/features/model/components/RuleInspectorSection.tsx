@@ -20,7 +20,9 @@ export function RuleInspectorSection({ tableKey, pendingRules, onChange }: RuleI
 
   return (
     <div className="space-y-2">
-      <p className="text-[10px] text-muted-foreground">Queue PostgreSQL RULE statements for apply.</p>
+      <p className="text-[10px] text-muted-foreground">
+        PostgreSQL-only: queue RULE statements for apply.
+      </p>
       <Input
         className="h-8 text-xs"
         placeholder="Label (optional)"

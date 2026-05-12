@@ -6,13 +6,16 @@ use deadpool_postgres::{
     Client, Config as PostgresConfig, ManagerConfig, Pool, PoolConfig, RecyclingMethod, Runtime,
     SslMode as DeadpoolSslMode, Timeouts,
 };
+use sqlx::{MySqlPool, SqlitePool};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::RwLock;
 use tokio_postgres::NoTls;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::models::{ConnectionInput, ConnectionSslMode, ConnectionSummary, StoredConnection};
+use crate::models::{
+    ConnectionInput, ConnectionSslMode, ConnectionSummary, DatabaseEngine, StoredConnection,
+};
 use crate::ssh_tunnel::SshTunnel;
 use crate::credentials;
 
@@ -26,6 +29,7 @@ const POOL_MAX_SIZE: usize = 6;
 const POOL_WAIT_SECS: u64 = 30;
 const POOL_CREATE_SECS: u64 = 15;
 const POOL_RECYCLE_SECS: u64 = 15;
+pub const DEFAULT_MYSQL_PORT: u16 = 3306;
 
 fn deadpool_ssl_mode(mode: ConnectionSslMode) -> DeadpoolSslMode {
     match mode {
@@ -38,6 +42,8 @@ fn deadpool_ssl_mode(mode: ConnectionSslMode) -> DeadpoolSslMode {
 #[derive(Default)]
 pub struct AppState {
     pub pools: RwLock<HashMap<String, Pool>>,
+    pub mysql_pools: RwLock<HashMap<String, MySqlPool>>,
+    pub sqlite_pools: RwLock<HashMap<String, SqlitePool>>,
     pub active_connection_id: RwLock<Option<String>>,
     pub ssh_tunnels: RwLock<HashMap<String, SshTunnel>>,
 }
@@ -221,6 +227,56 @@ pub fn build_pool(input: &ConnectionInput) -> Result<Pool, String> {
     build_pool_custom(&input.host, input.port, input)
 }
 
+fn mysql_url(host: &str, port: u16, input: &ConnectionInput) -> String {
+    let password = urlencoding::encode(&input.password);
+    let user = urlencoding::encode(&input.user);
+    let database = urlencoding::encode(&input.database);
+    format!("mysql://{}:{}@{}:{}/{}", user, password, host, port, database)
+}
+
+fn sqlite_url(input: &ConnectionInput) -> Result<String, String> {
+    let path = input
+        .file_path
+        .clone()
+        .unwrap_or_else(|| input.database.clone());
+    if path.trim().is_empty() {
+        return Err("SQLite file path is required.".to_string());
+    }
+    if path == ":memory:" {
+        return Ok("sqlite::memory:".to_string());
+    }
+    if path.starts_with('/') {
+        Ok(format!("sqlite://{}", path))
+    } else {
+        Ok(format!("sqlite://{}", path))
+    }
+}
+
+pub async fn build_mysql_pool_custom(host: &str, port: u16, input: &ConnectionInput) -> Result<MySqlPool, String> {
+    let url = mysql_url(host, port, input);
+    sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(POOL_MAX_SIZE as u32)
+        .acquire_timeout(Duration::from_secs(POOL_WAIT_SECS))
+        .connect(&url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn build_mysql_pool(input: &ConnectionInput) -> Result<MySqlPool, String> {
+    let port = if input.port == 0 { DEFAULT_MYSQL_PORT } else { input.port };
+    build_mysql_pool_custom(&input.host, port, input).await
+}
+
+pub async fn build_sqlite_pool(input: &ConnectionInput) -> Result<SqlitePool, String> {
+    let url = sqlite_url(input)?;
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(POOL_WAIT_SECS))
+        .connect(&url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Heuristic for transport-level failures where discarding the pool and opening
 /// a new TCP session may succeed (sleep/VPN blips, idle disconnects).
 fn is_retryable_connection_error(message: &str) -> bool {
@@ -244,6 +300,8 @@ fn is_retryable_connection_error(message: &str) -> bool {
 
 pub async fn drop_pool(state: &AppState, connection_id: &str) {
     state.pools.write().await.remove(connection_id);
+    state.mysql_pools.write().await.remove(connection_id);
+    state.sqlite_pools.write().await.remove(connection_id);
     if let Some(mut tunnel) = state.ssh_tunnels.write().await.remove(connection_id) {
         tunnel.close().await;
     }
@@ -333,6 +391,49 @@ pub async fn get_or_create_pool(
 
     let input = stored_connection.to_input();
 
+    let resolved_port = if input.port == 0 { DEFAULT_MYSQL_PORT } else { input.port };
+    let (host, port) = if let Some(ref ssh_config) = input.ssh_config {
+        if ssh_config.is_active() {
+            let tunnel = SshTunnel::connect(ssh_config, &input.host, resolved_port).await?;
+            let local_port = tunnel.local_port;
+            state
+                .ssh_tunnels
+                .write()
+                .await
+                .insert(connection_id.to_string(), tunnel);
+            ("127.0.0.1".to_string(), local_port)
+        } else {
+            (input.host.clone(), resolved_port)
+        }
+    } else {
+        (input.host.clone(), resolved_port)
+    };
+
+    let pool = build_pool_custom(&host, port, &input)?;
+
+    state
+        .pools
+        .write()
+        .await
+        .insert(connection_id.to_string(), pool.clone());
+
+    Ok(pool)
+}
+
+pub async fn get_or_create_mysql_pool(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+) -> Result<MySqlPool, String> {
+    if let Some(pool) = state.mysql_pools.read().await.get(connection_id).cloned() {
+        return Ok(pool);
+    }
+
+    let stored_connection = load_connection(app, connection_id)?
+        .ok_or_else(|| "Stored connection details were not found.".to_string())?;
+
+    let input = stored_connection.to_input();
+
     let (host, port) = if let Some(ref ssh_config) = input.ssh_config {
         if ssh_config.is_active() {
             let tunnel = SshTunnel::connect(ssh_config, &input.host, input.port).await?;
@@ -350,15 +451,48 @@ pub async fn get_or_create_pool(
         (input.host.clone(), input.port)
     };
 
-    let pool = build_pool_custom(&host, port, &input)?;
+    let pool = build_mysql_pool_custom(&host, port, &input).await?;
+    state
+        .mysql_pools
+        .write()
+        .await
+        .insert(connection_id.to_string(), pool.clone());
+    Ok(pool)
+}
+
+pub async fn get_or_create_sqlite_pool(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+) -> Result<SqlitePool, String> {
+    if let Some(pool) = state.sqlite_pools.read().await.get(connection_id).cloned() {
+        return Ok(pool);
+    }
+
+    let stored_connection = load_connection(app, connection_id)?
+        .ok_or_else(|| "Stored connection details were not found.".to_string())?;
+
+    let input = stored_connection.to_input();
+    let pool = build_sqlite_pool(&input).await?;
 
     state
-        .pools
+        .sqlite_pools
         .write()
         .await
         .insert(connection_id.to_string(), pool.clone());
 
     Ok(pool)
+}
+
+pub async fn resolve_connection_engine(
+    app: &AppHandle,
+    state: &AppState,
+    requested_connection_id: Option<String>,
+) -> Result<(String, DatabaseEngine), String> {
+    let connection_id = resolve_connection_id(state, requested_connection_id).await?;
+    let stored = load_connection(app, &connection_id)?
+        .ok_or_else(|| "Stored connection details were not found.".to_string())?;
+    Ok((connection_id, stored.engine))
 }
 
 pub fn list_connections(app: &AppHandle) -> Result<Vec<ConnectionSummary>, String> {
@@ -410,7 +544,9 @@ pub fn persist_connection_with_password(
     let mut stored = connection.clone();
     stored.password = Some(password.to_string());
     persist_connection(app, &stored)?;
-    credentials::store_password(&connection.id, password)?;
+    if connection.engine != DatabaseEngine::Sqlite {
+        credentials::store_password(&connection.id, password)?;
+    }
     Ok(())
 }
 
@@ -441,6 +577,11 @@ pub fn load_connection(
     };
 
     let json_password = connection.password.clone();
+
+    if connection.engine == DatabaseEngine::Sqlite {
+        connection.password = Some(String::new());
+        return Ok(Some(connection));
+    }
 
     match credentials::get_password(connection_id) {
         Ok(Some(password)) => {

@@ -36,14 +36,17 @@ export function useConnectMutation(options: UseConnectMutationOptions = {}) {
       const optimistic: ConnectionSummary = {
         id: tempId,
         name: input.name,
+        engine: input.engine,
         host: input.host,
         port: input.port,
         database: input.database,
+        filePath: input.filePath ?? null,
         user: input.user,
         connectedAt: new Date().toISOString(),
         sslMode: input.sslMode,
         sshConfig: input.sshConfig ?? null,
         extraParams: input.extraParams ?? null,
+        tablePropertyEditingSupported: input.engine === 'postgres',
       }
 
       queryClient.setQueryData<ConnectionSummary[]>(queryKeys.connections(), (current) => {

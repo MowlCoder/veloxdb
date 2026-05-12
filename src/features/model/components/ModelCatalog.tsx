@@ -12,6 +12,7 @@ import { tableKey } from '@/features/model/model-types'
 type ModelCatalogProps = {
   tables: TableInfo[]
   onCanvasSet: ReadonlySet<TableKey>
+  onDiagramCount: number
   selectedKeys: readonly TableKey[]
   onSelectKey: (key: TableKey | null) => void
   onAddToCanvas: (table: TableInfo) => void
@@ -26,6 +27,7 @@ const ROW_H = 40
 export function ModelCatalog({
   tables,
   onCanvasSet,
+  onDiagramCount,
   selectedKeys,
   onSelectKey,
   onAddToCanvas,
@@ -149,7 +151,7 @@ export function ModelCatalog({
         </div>
       </div>
       <p className="text-[11px] text-muted-foreground">
-        {filtered.length} of {tables.length} tables
+        {filtered.length} of {tables.length} tables in catalog; {onDiagramCount} on diagram
       </p>
     </div>
   )

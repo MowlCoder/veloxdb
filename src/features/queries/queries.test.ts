@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildExplainSql } from '@/features/queries/queries'
 import { useSettings } from '@/lib/settings'
 
 describe('maxQueryRows wiring', () => {
@@ -16,5 +17,19 @@ describe('maxQueryRows wiring', () => {
     expect(useSettings.getState().maxQueryRows).toBe(5000)
     // Restore
     useSettings.setState({ maxQueryRows: prev })
+  })
+})
+
+describe('engine-aware explain sql', () => {
+  it('builds postgres explain wrapper', () => {
+    expect(buildExplainSql('postgres', 'select 1')).toContain('EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)')
+  })
+
+  it('builds mysql explain wrapper', () => {
+    expect(buildExplainSql('mysql', 'select 1')).toContain('EXPLAIN FORMAT=TRADITIONAL')
+  })
+
+  it('builds sqlite explain wrapper', () => {
+    expect(buildExplainSql('sqlite', 'select 1')).toContain('EXPLAIN QUERY PLAN')
   })
 })

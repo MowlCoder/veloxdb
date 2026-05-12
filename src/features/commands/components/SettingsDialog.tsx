@@ -222,6 +222,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 </a>
               </Field>
 
+              <Field label="Support" desc="Keep VeloxDB free, support us.">
+                <iframe
+                  src="https://github.com/sponsors/abeni16/button"
+                  title="Sponsor abeni16"
+                  height="32"
+                  width="114"
+                  style={{ border: 0, borderRadius: 6 }}
+                />
+              </Field>
+
               <Field label="Check for updates" desc="See if a newer version is available on GitHub.">
                 <div className="flex items-center gap-2">
                   <Button

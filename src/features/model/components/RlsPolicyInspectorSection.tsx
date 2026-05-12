@@ -25,7 +25,7 @@ export function RlsPolicyInspectorSection({
   return (
     <div className="space-y-2">
       <p className="text-[10px] text-muted-foreground">
-        Queue PostgreSQL RLS statements (policy create/drop, enable/disable row level security).
+        PostgreSQL-only: queue RLS statements (policy create/drop, enable/disable row level security).
       </p>
       <Input
         className="h-8 text-xs"

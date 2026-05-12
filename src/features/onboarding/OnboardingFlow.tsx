@@ -15,7 +15,7 @@ const STEPS = [
   {
     id: 'welcome',
     kicker: 'Fast · Secure · Local-first',
-    title: 'PostgreSQL, unleashed on your desktop',
+    title: 'SQL databases, unleashed on your desktop',
     body:
       'Built for builders who live in SQL. VeloxDB keeps you in flow—snappy queries, crisp results, a workspace that feels premium. Your data stays between you and your database: private by design, secure by default, no extra cloud hop just to run a SELECT.',
     icon: DatabaseIcon,
@@ -25,7 +25,7 @@ const STEPS = [
     kicker: 'Simple · Reliable',
     title: 'Connect once. Reconnect instantly.',
     body:
-      'Save trusted profiles and jump between databases in one click—no ritual re-entering of host and port every session. From localhost to production-grade clusters, we keep the path short so you wire fast and ship faster.',
+      'Save trusted profiles and jump between databases in one click—no ritual re-entering of host and port every session. From PostgreSQL and MySQL to local SQLite files, we keep the path short so you wire fast and ship faster.',
     icon: PlugsConnectedIcon,
   },
   {

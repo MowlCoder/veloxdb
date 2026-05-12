@@ -33,6 +33,12 @@ import { useConnectionHealth } from '@/features/connections/use-connection-healt
 import { useDatabasesQuery, useSwitchDatabaseMutation } from '@/features/connections/queries'
 import { readExpandedIds, writeExpandedIds } from '@/lib/tree-expanded-persistence'
 
+function engineBadge(engine: ConnectionSummary['engine']): string {
+  if (engine === 'postgres') return 'PG'
+  if (engine === 'mysql') return 'MY'
+  return 'SQ'
+}
+
 type ConnectionContextMenuTarget = {
   kind: 'connection'
   connection: ConnectionSummary
@@ -426,6 +432,13 @@ export function ConnectionsSidebarTree({
     return () => window.removeEventListener('pointerdown', onPointerDown, true)
   }, [contextMenu])
 
+  const cancelPendingSelect = useCallback(() => {
+    if (pendingSelectTimeoutRef.current != null) {
+      window.clearTimeout(pendingSelectTimeoutRef.current)
+      pendingSelectTimeoutRef.current = null
+    }
+  }, [])
+
   const scheduleSelectConnection = useCallback(
     (connection: ConnectionSummary) => {
       cancelPendingSelect()
@@ -434,15 +447,8 @@ export function ConnectionsSidebarTree({
         setIsTablesPanelExpanded(true)
       }, 160)
     },
-    [onSelectConnection],
+    [cancelPendingSelect, onSelectConnection],
   )
-
-  const cancelPendingSelect = useCallback(() => {
-    if (pendingSelectTimeoutRef.current != null) {
-      window.clearTimeout(pendingSelectTimeoutRef.current)
-      pendingSelectTimeoutRef.current = null
-    }
-  }, [])
 
   const visibleConnections = useMemo(() => {
     if (connections.length <= 5) return connections
@@ -495,9 +501,15 @@ export function ConnectionsSidebarTree({
 
         switch (action) {
           case 'copyConnectionString':
-            void navigator.clipboard.writeText(
-              `postgresql://${connection.user}@${connection.host}:${connection.port}/${connection.database}`,
-            )
+            if (onCopyConnectionString) {
+              onCopyConnectionString(connection)
+            } else {
+              void navigator.clipboard.writeText(
+                connection.engine === 'sqlite'
+                  ? `sqlite://${connection.filePath ?? connection.database}`
+                  : `${connection.engine === 'mysql' ? 'mysql' : 'postgresql'}://${connection.user}@${connection.host}:${connection.port}/${connection.database}`,
+              )
+            }
             break
           case 'refreshConnection':
             void onRefreshConnection(connection)
@@ -577,9 +589,7 @@ export function ConnectionsSidebarTree({
       setContextMenu(null)
     },
     [
-      activeConnectionId,
       contextMenu,
-      isSearching,
       onRefreshConnection,
       onDisconnectConnection,
       onCopyConnectionString,
@@ -659,7 +669,7 @@ export function ConnectionsSidebarTree({
                   )} />
                   <span className="min-w-0 flex-1 truncate font-medium">{db.name}</span>
                   <span className="shrink-0 rounded border border-sidebar-border/60 px-1 text-[9px] text-sidebar-foreground/40">
-                    PG
+                    {engineBadge(connection.engine)}
                   </span>
                   {db.name === connection.database ? (
                     <span className="shrink-0 rounded bg-emerald-500/15 px-1 text-[9px] font-medium text-emerald-600">

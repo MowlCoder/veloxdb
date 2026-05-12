@@ -1,12 +1,18 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sqlx::{Column, Row};
+use sqlx::mysql::MySqlRow;
+use sqlx::sqlite::SqliteRow;
 use tokio_postgres::SimpleQueryMessage;
 
-use crate::db::{resolve_connection_id, with_pool_client_retry, AppState};
+use crate::db::{
+    get_or_create_mysql_pool, get_or_create_sqlite_pool, resolve_connection_engine,
+    with_pool_client_retry, AppState,
+};
+use crate::models::DatabaseEngine;
 
 const TABLE_W: f64 = 240.0;
 const HEADER_H: f64 = 30.0;
@@ -261,48 +267,110 @@ pub async fn export_results_csv(
     state: &AppState,
     input: &ExportQueryRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(app, state, input.connection_id.clone()).await?;
     let sql = input.sql.trim().to_string();
     if sql.is_empty() {
         return Err("No SQL to export.".to_string());
     }
 
-    let lines = with_pool_client_retry(
-        app, state, &connection_id, sql,
-        |client, sql| async move {
-            let messages = client.simple_query(&sql).await.map_err(|e| e.to_string())?;
-            let mut result: Vec<String> = Vec::new();
-            let mut columns: Vec<String> = Vec::new();
-            let mut header_written = false;
+    let lines = match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(
+                app, state, &connection_id, sql,
+                |client, sql| async move {
+                    let messages = client.simple_query(&sql).await.map_err(|e| e.to_string())?;
+                    let mut result: Vec<String> = Vec::new();
+                    let mut columns: Vec<String> = Vec::new();
+                    let mut header_written = false;
 
-            for msg in messages {
-                match msg {
-                    SimpleQueryMessage::RowDescription(desc) => {
-                        if columns.is_empty() {
-                            columns = desc.iter().map(|c| c.name().to_string()).collect();
+                    for msg in messages {
+                        match msg {
+                            SimpleQueryMessage::RowDescription(desc) => {
+                                if columns.is_empty() {
+                                    columns = desc.iter().map(|c| c.name().to_string()).collect();
+                                }
+                            }
+                            SimpleQueryMessage::Row(row) => {
+                                if !header_written {
+                                    result.push(columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
+                                    header_written = true;
+                                }
+                                if columns.is_empty() {
+                                    columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                                    result.push(columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
+                                    header_written = true;
+                                }
+                                let values: Vec<String> = columns.iter().enumerate()
+                                    .map(|(i, _)| csv_escape(row.get(i).unwrap_or("")))
+                                    .collect();
+                                result.push(values.join(","));
+                            }
+                            _ => {}
                         }
                     }
-                    SimpleQueryMessage::Row(row) => {
-                        if !header_written {
-                            result.push(columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
-                            header_written = true;
-                        }
-                        if columns.is_empty() {
-                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                            result.push(columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
-                            header_written = true;
-                        }
-                        let values: Vec<String> = columns.iter().enumerate()
-                            .map(|(i, _)| csv_escape(row.get(i).unwrap_or("")))
-                            .collect();
-                        result.push(values.join(","));
-                    }
-                    _ => {}
+                    Ok(result)
+                },
+            ).await?
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(app, state, &connection_id).await?;
+            let rows = sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            if rows.is_empty() {
+                Vec::new()
+            } else {
+                let columns: Vec<String> = rows[0]
+                    .columns()
+                    .iter()
+                    .map(|column| column.name().to_string())
+                    .collect();
+                let mut lines = vec![columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(",")];
+                for row in rows {
+                    let values: Vec<String> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(index, column_name)| {
+                            mysql_value_to_string(&row, index, column_name, "export_results_csv")
+                                .map(|value| csv_escape(&value))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    lines.push(values.join(","));
                 }
+                lines
             }
-            Ok(result)
-        },
-    ).await?;
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(app, state, &connection_id).await?;
+            let rows = sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            if rows.is_empty() {
+                Vec::new()
+            } else {
+                let columns: Vec<String> = rows[0]
+                    .columns()
+                    .iter()
+                    .map(|column| column.name().to_string())
+                    .collect();
+                let mut lines = vec![columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(",")];
+                for row in rows {
+                    let values: Vec<String> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(index, column_name)| {
+                            sqlite_value_to_string(&row, index, column_name, "export_results_csv")
+                                .map(|value| csv_escape(&value))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    lines.push(values.join(","));
+                }
+                lines
+            }
+        }
+    };
 
     let content = lines.join("\n") + "\n";
     fs::write(&input.output_path, content).map_err(|e| e.to_string())?;
@@ -314,44 +382,98 @@ pub async fn export_results_json(
     state: &AppState,
     input: &ExportQueryRequest,
 ) -> Result<(), String> {
-    let connection_id = resolve_connection_id(state, input.connection_id.clone()).await?;
+    let (connection_id, engine) = resolve_connection_engine(app, state, input.connection_id.clone()).await?;
     let sql = input.sql.trim().to_string();
     if sql.is_empty() {
         return Err("No SQL to export.".to_string());
     }
 
-    let rows: Vec<String> = with_pool_client_retry(
-        app, state, &connection_id, sql,
-        |client, sql| async move {
-            let messages = client.simple_query(&sql).await.map_err(|e| e.to_string())?;
-            let mut result: Vec<String> = Vec::new();
-            let mut columns: Vec<String> = Vec::new();
+    let rows: Vec<String> = match engine {
+        DatabaseEngine::Postgres => {
+            with_pool_client_retry(
+                app, state, &connection_id, sql,
+                |client, sql| async move {
+                    let messages = client.simple_query(&sql).await.map_err(|e| e.to_string())?;
+                    let mut result: Vec<String> = Vec::new();
+                    let mut columns: Vec<String> = Vec::new();
 
-            for msg in messages {
-                match msg {
-                    SimpleQueryMessage::RowDescription(desc) => {
-                        if columns.is_empty() {
-                            columns = desc.iter().map(|c| c.name().to_string()).collect();
+                    for msg in messages {
+                        match msg {
+                            SimpleQueryMessage::RowDescription(desc) => {
+                                if columns.is_empty() {
+                                    columns = desc.iter().map(|c| c.name().to_string()).collect();
+                                }
+                            }
+                            SimpleQueryMessage::Row(row) => {
+                                if columns.is_empty() {
+                                    columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                                }
+                                let obj: serde_json::Map<String, serde_json::Value> = columns.iter().enumerate()
+                                    .map(|(i, col)| {
+                                        let val = row.get(i).unwrap_or("");
+                                        (col.clone(), serde_json::Value::String(val.to_string()))
+                                    })
+                                    .collect();
+                                result.push(serde_json::to_string(&obj).map_err(|e| e.to_string())?);
+                            }
+                            _ => {}
                         }
                     }
-                    SimpleQueryMessage::Row(row) => {
-                        if columns.is_empty() {
-                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                        }
-                        let obj: serde_json::Map<String, serde_json::Value> = columns.iter().enumerate()
-                            .map(|(i, col)| {
-                                let val = row.get(i).unwrap_or("");
-                                (col.clone(), serde_json::Value::String(val.to_string()))
-                            })
-                            .collect();
-                        result.push(serde_json::to_string(&obj).map_err(|e| e.to_string())?);
-                    }
-                    _ => {}
+                    Ok(result)
+                },
+            ).await?
+        }
+        DatabaseEngine::Mysql => {
+            let pool = get_or_create_mysql_pool(app, state, &connection_id).await?;
+            let db_rows = sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut result = Vec::new();
+            for row in db_rows {
+                let columns = row.columns();
+                let mut obj = serde_json::Map::new();
+                for (idx, col) in columns.iter().enumerate() {
+                    obj.insert(
+                        col.name().to_string(),
+                        serde_json::Value::String(mysql_value_to_string(
+                            &row,
+                            idx,
+                            col.name(),
+                            "export_results_json",
+                        )?),
+                    );
                 }
+                result.push(serde_json::to_string(&obj).map_err(|e| e.to_string())?);
             }
-            Ok(result)
-        },
-    ).await?;
+            result
+        }
+        DatabaseEngine::Sqlite => {
+            let pool = get_or_create_sqlite_pool(app, state, &connection_id).await?;
+            let db_rows = sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut result = Vec::new();
+            for row in db_rows {
+                let columns = row.columns();
+                let mut obj = serde_json::Map::new();
+                for (idx, col) in columns.iter().enumerate() {
+                    obj.insert(
+                        col.name().to_string(),
+                        serde_json::Value::String(sqlite_value_to_string(
+                            &row,
+                            idx,
+                            col.name(),
+                            "export_results_json",
+                        )?),
+                    );
+                }
+                result.push(serde_json::to_string(&obj).map_err(|e| e.to_string())?);
+            }
+            result
+        }
+    };
 
     let content = format!("[\n{}\n]\n", rows.join(",\n"));
     fs::write(&input.output_path, content).map_err(|e| e.to_string())?;
@@ -364,4 +486,58 @@ fn csv_escape(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn mysql_value_to_string(row: &MySqlRow, index: usize, column_name: &str, context: &str) -> Result<String, String> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(index) {
+        return Ok(value.unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<i32>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<u64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<bool>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
+        return Ok(value
+            .map(|v| format!("0x{}", hex::encode(v)))
+            .unwrap_or_default());
+    }
+    Err(format!(
+        "MySQL decode error in {} at column '{}' (index {}): unsupported value type",
+        context, column_name, index
+    ))
+}
+
+fn sqlite_value_to_string(row: &SqliteRow, index: usize, column_name: &str, context: &str) -> Result<String, String> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(index) {
+        return Ok(value.unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<bool>, _>(index) {
+        return Ok(value.map(|v| v.to_string()).unwrap_or_default());
+    }
+    if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
+        return Ok(value
+            .map(|v| format!("0x{}", hex::encode(v)))
+            .unwrap_or_default());
+    }
+    Err(format!(
+        "SQLite decode error in {} at column '{}' (index {}): unsupported value type",
+        context, column_name, index
+    ))
 }

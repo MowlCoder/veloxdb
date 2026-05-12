@@ -1,4 +1,5 @@
-import type { ColumnProperties, TableInfo } from '@/data/types'
+import type { ColumnProperties, DatabaseEngine, TableInfo } from '@/data/types'
+import { quoteIdent } from '@/lib/sql-ident'
 
 export type ResultRow = Record<string, string | null>
 
@@ -10,12 +11,9 @@ export type ResultEditPatch = {
 
 export type SaveResultEditsRequest = {
   connectionId?: string
+  engine?: DatabaseEngine
   table: TableInfo
   patches: ResultEditPatch[]
-}
-
-function quoteIdentifier(identifier: string) {
-  return `"${identifier.replaceAll('"', '""')}"`
 }
 
 function sqlLiteral(value: string | null) {
@@ -26,7 +24,7 @@ function sqlLiteral(value: string | null) {
   return `'${value.replaceAll("'", "''")}'`
 }
 
-function buildWhereClause(primaryKey: Record<string, string | null>) {
+function buildWhereClause(primaryKey: Record<string, string | null>, engine: DatabaseEngine) {
   const entries = Object.entries(primaryKey)
   if (entries.length === 0) {
     return ''
@@ -35,23 +33,24 @@ function buildWhereClause(primaryKey: Record<string, string | null>) {
   return entries
     .map(([columnName, columnValue]) => {
       if (columnValue === null) {
-        return `${quoteIdentifier(columnName)} IS NULL`
+        return `${quoteIdent(columnName, engine)} IS NULL`
       }
 
-      return `${quoteIdentifier(columnName)} = ${sqlLiteral(columnValue)}`
+      return `${quoteIdent(columnName, engine)} = ${sqlLiteral(columnValue)}`
     })
     .join(' AND ')
 }
 
 export function buildUpdateStatements(request: SaveResultEditsRequest) {
-  const tableName = `${quoteIdentifier(request.table.schema)}.${quoteIdentifier(request.table.name)}`
+  const engine = request.engine ?? 'postgres'
+  const tableName = `${quoteIdent(request.table.schema, engine)}.${quoteIdent(request.table.name, engine)}`
 
   return request.patches
     .map((patch) => {
       const assignments = Object.entries(patch.changes)
-        .map(([columnName, value]) => `${quoteIdentifier(columnName)} = ${sqlLiteral(value)}`)
+        .map(([columnName, value]) => `${quoteIdent(columnName, engine)} = ${sqlLiteral(value)}`)
         .join(', ')
-      const whereClause = buildWhereClause(patch.primaryKey)
+      const whereClause = buildWhereClause(patch.primaryKey, engine)
 
       if (!assignments || !whereClause) {
         return ''
@@ -80,21 +79,24 @@ export type InsertRowColumnValue = {
 
 export type InsertRowRequest = {
   connectionId: string
+  engine?: DatabaseEngine
   table: TableInfo
   columns: InsertRowColumnValue[]
 }
 
 export type DeleteRowsRequest = {
   connectionId?: string
+  engine?: DatabaseEngine
   table: TableInfo
   primaryKeys: Record<string, string | null>[]
 }
 
 export function buildDeleteStatements(request: DeleteRowsRequest): string {
-  const tableName = `${quoteIdentifier(request.table.schema)}.${quoteIdentifier(request.table.name)}`
+  const engine = request.engine ?? 'postgres'
+  const tableName = `${quoteIdent(request.table.schema, engine)}.${quoteIdent(request.table.name, engine)}`
   return request.primaryKeys
     .map((pk) => {
-      const whereClause = buildWhereClause(pk)
+      const whereClause = buildWhereClause(pk, engine)
       if (!whereClause) return ''
       return `DELETE FROM ${tableName} WHERE ${whereClause};`
     })
@@ -103,12 +105,13 @@ export function buildDeleteStatements(request: DeleteRowsRequest): string {
 }
 
 export function buildInsertStatement(request: InsertRowRequest): string {
-  const tableName = `${quoteIdentifier(request.table.schema)}.${quoteIdentifier(request.table.name)}`
+  const engine = request.engine ?? 'postgres'
+  const tableName = `${quoteIdent(request.table.schema, engine)}.${quoteIdent(request.table.name, engine)}`
   if (request.columns.length === 0) {
     return `INSERT INTO ${tableName}\nDEFAULT VALUES;`
   }
 
-  const columnList = request.columns.map((c) => quoteIdentifier(c.columnName)).join(', ')
+  const columnList = request.columns.map((c) => quoteIdent(c.columnName, engine)).join(', ')
   const values = request.columns.map((c) => sqlLiteral(c.value)).join(', ')
   return `INSERT INTO ${tableName} (${columnList})\nVALUES (${values});`
 }
