@@ -9,12 +9,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import type { DatabaseEngine } from '@/data/types'
 import { useExecuteDdlTransactionMutation } from '@/features/model/queries'
 
 type DdlReviewDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   connectionId: string
+  engine: DatabaseEngine
 }
 
 function splitStatements(sql: string): string[] {
@@ -24,7 +26,7 @@ function splitStatements(sql: string): string[] {
     .filter((s) => s.length > 0 && !s.startsWith('--'))
 }
 
-export function DdlReviewDialog({ open, onOpenChange, connectionId }: DdlReviewDialogProps) {
+export function DdlReviewDialog({ open, onOpenChange, connectionId, engine }: DdlReviewDialogProps) {
   const [text, setText] = useState(
     '-- Paste one or more SQL statements separated by semicolons.\n-- They run in a single transaction.\n',
   )
@@ -36,8 +38,9 @@ export function DdlReviewDialog({ open, onOpenChange, connectionId }: DdlReviewD
         <DialogHeader>
           <DialogTitle>Run DDL script</DialogTitle>
           <DialogDescription>
-            Statements execute in order inside one PostgreSQL transaction. On failure, the whole batch
-            rolls back.
+            {engine === 'postgres'
+              ? 'Statements execute in order inside one PostgreSQL transaction. On failure, the whole batch rolls back.'
+              : `Statements execute in order for the active ${engine} connection.`}
           </DialogDescription>
         </DialogHeader>
 

@@ -18,21 +18,14 @@ const SSL_MODE_KEY = 'sslmode'
 const VALID_SSL_MODES: Set<string> = new Set(['disable', 'prefer', 'require'])
 
 function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim()
-  if (
-    trimmed.startsWith('postgresql://') ||
-    trimmed.startsWith('postgres://') ||
-    trimmed.startsWith('mysql://') ||
-    trimmed.startsWith('sqlite://')
-  ) {
-    return trimmed
-  }
-  return `postgresql://${trimmed}`
+  return raw.trim()
 }
 
 /**
- * Parses a PostgreSQL connection URI like:
- *   postgresql://user:password@host:5432/dbname?sslmode=require&connect_timeout=10
+ * Parses supported connection URIs like:
+ *   postgresql://user:password@host:5432/dbname?sslmode=require
+ *   mysql://user:password@host:3306/dbname
+ *   sqlite:///absolute/path/to/file.db
  *
  * Falls back gracefully — unknown/unsupported params go into extraParams.
  */
@@ -53,9 +46,15 @@ export function parseConnectionString(raw: string): ParsedConnectionString | nul
     }
   }
 
+  const normalized = normalizeUrl(raw)
+  if (!normalized.includes('://')) {
+    // Require explicit scheme to avoid silently coercing non-Postgres input.
+    return null
+  }
+
   let url: URL
   try {
-    url = new URL(normalizeUrl(raw))
+    url = new URL(normalized)
   } catch {
     return null
   }
@@ -89,9 +88,7 @@ export function parseConnectionString(raw: string): ParsedConnectionString | nul
   return { engine, host, port, database, user, password, sslMode, extraParams }
 }
 
-/**
- * Builds a PostgreSQL connection URI from individual fields.
- */
+/** Builds a connection URI from individual fields. */
 export function buildConnectionString(fields: {
   engine: DatabaseEngine
   user: string

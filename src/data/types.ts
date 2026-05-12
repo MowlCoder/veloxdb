@@ -43,6 +43,7 @@ export type ConnectionSummary = {
   sslMode: ConnectionSslMode
   sshConfig?: SshConfig | null
   extraParams?: Record<string, string> | null
+  tablePropertyEditingSupported: boolean
 }
 
 export type QueryRequest = {

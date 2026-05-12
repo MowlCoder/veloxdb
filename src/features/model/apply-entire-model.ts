@@ -1,5 +1,5 @@
 import { veloxDbRepository } from '@/data/repositories'
-import type { TableInfo } from '@/data/types'
+import type { DatabaseEngine, TableInfo } from '@/data/types'
 import type { TableKey } from '@/features/model/model-types'
 
 export type ColumnOverride = {
@@ -155,6 +155,7 @@ export function buildCreateTableStatement(ct: PendingCreateTable): string {
 
 export type ApplyEntireModelParams = {
   connectionId: string
+  engine: DatabaseEngine
   onCanvas: TableKey[]
   tablesByKey: Map<TableKey, TableInfo>
   identityDraftByKey: Record<TableKey, TableIdentityDraft>
@@ -177,6 +178,7 @@ export type ApplyEntireModelResult = {
  */
 export async function applyEntireModel({
   connectionId,
+  engine,
   onCanvas,
   tablesByKey,
   identityDraftByKey,
@@ -189,6 +191,10 @@ export async function applyEntireModel({
   pendingRlsPolicies,
   pendingCreateTables,
 }: ApplyEntireModelParams): Promise<ApplyEntireModelResult> {
+  if (engine !== 'postgres') {
+    throw new Error(`Apply entire model is currently supported for PostgreSQL only (active engine: ${engine}).`)
+  }
+
   const renamed: Array<{ from: TableKey; to: TableKey }> = []
 
   const ddlPre: string[] = []

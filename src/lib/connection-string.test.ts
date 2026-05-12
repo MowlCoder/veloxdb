@@ -26,6 +26,11 @@ describe('connection string parsing and building', () => {
     expect(parsed?.filePath).toBe('/tmp/velox.db')
   })
 
+  it('requires explicit URI scheme', () => {
+    const parsed = parseConnectionString('postgres:secret@localhost:5432/postgres')
+    expect(parsed).toBeNull()
+  })
+
   it('builds sqlite uri from file path', () => {
     const value = buildConnectionString({
       engine: 'sqlite',

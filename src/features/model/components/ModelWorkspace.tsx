@@ -27,7 +27,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { queryKeys } from '@/data/query-keys'
 import { veloxDbRepository } from '@/data/repositories'
-import type { ColumnInfo, TableInfo } from '@/data/types'
+import type { ColumnInfo, DatabaseEngine, TableInfo } from '@/data/types'
 import {
   applyEntireModel,
   type PendingCreateTable,
@@ -82,6 +82,7 @@ import { cn } from '@/lib/utils'
 
 type ModelWorkspaceProps = {
   connectionId: string
+  connectionEngine: DatabaseEngine
   defaultDatabaseName: string
   isDark: boolean
   tables: TableInfo[]
@@ -97,6 +98,7 @@ function tableKeyToParts(key: TableKey): { schema: string; name: string } {
 
 export function ModelWorkspace({
   connectionId,
+  connectionEngine,
   defaultDatabaseName,
   isDark,
   tables,
@@ -1182,6 +1184,7 @@ export function ModelWorkspace({
     try {
       const result = await applyEntireModel({
         connectionId,
+        engine: connectionEngine,
         onCanvas,
         tablesByKey,
         identityDraftByKey,
@@ -1247,6 +1250,7 @@ export function ModelWorkspace({
       setApplyPending(false)
     }
   }, [
+    connectionEngine,
     columnOverridesByKey,
     columnIdentityOverridesByKey,
     connectionId,
@@ -1815,7 +1819,12 @@ export function ModelWorkspace({
         </TabsContent>
       </Tabs>
 
-      <DdlReviewDialog open={ddlOpen} onOpenChange={setDdlOpen} connectionId={connectionId} />
+      <DdlReviewDialog
+        open={ddlOpen}
+        onOpenChange={setDdlOpen}
+        connectionId={connectionId}
+        engine={connectionEngine}
+      />
       <CreateTableDialog
         open={createTableOpen}
         onOpenChange={setCreateTableOpen}

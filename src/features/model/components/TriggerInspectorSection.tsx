@@ -24,7 +24,9 @@ export function TriggerInspectorSection({
 
   return (
     <div className="space-y-2">
-      <p className="text-[10px] text-muted-foreground">Queue PostgreSQL TRIGGER statements for apply.</p>
+      <p className="text-[10px] text-muted-foreground">
+        PostgreSQL-only: queue TRIGGER statements for apply.
+      </p>
       <Input
         className="h-8 text-xs"
         placeholder="Label (optional)"

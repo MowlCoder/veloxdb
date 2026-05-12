@@ -48,6 +48,7 @@ import {
 } from "@/features/queries/sql-templates";
 import type { TableQuickSqlAction } from "@/features/queries/table-quick-actions";
 import { isInsertFormColumn, type ResultEditPatch } from "@/features/queries/result-edits";
+import { quoteIdent } from "@/lib/sql-ident";
 import { TablePropertiesDialog } from "@/features/schema/components/TablePropertiesDialog";
 import {
 	useTablePropertiesQuery,
@@ -86,6 +87,28 @@ function readResultsHeight() {
 
 function persistLastActiveConnectionId(connectionId: string) {
 	window.localStorage.setItem(LAST_ACTIVE_CONNECTION_KEY, connectionId);
+}
+
+function connectionSecondaryText(connection: ConnectionSummary): string {
+	if (connection.engine === "sqlite") {
+		return connection.filePath === ":memory:"
+			? "SQLite in-memory database"
+			: `SQLite file: ${connection.filePath ?? connection.database}`;
+	}
+	return `${connection.user}@${connection.host}:${connection.port}${connection.sshConfig ? " (via SSH)" : ""}`;
+}
+
+function connectionHeadline(connection: ConnectionSummary): string {
+	if (connection.engine === "sqlite") {
+		return `Connected to SQLite (${connection.filePath ?? connection.database})`;
+	}
+	return `Connected to ${connection.database} on ${connection.host}:${connection.port}`;
+}
+
+function engineLabel(engine: ConnectionSummary["engine"]): string {
+	if (engine === "postgres") return "PostgreSQL";
+	if (engine === "mysql") return "MySQL";
+	return "SQLite";
 }
 
 function VeloxApp() {
@@ -171,7 +194,7 @@ function VeloxApp() {
 		onSuccess: (nextConnection) => {
 			notifySuccess(
 				`Connected to ${nextConnection.database}`,
-				`${nextConnection.user}@${nextConnection.host}:${nextConnection.port}${nextConnection.sshConfig ? ' (via SSH)' : ''}`,
+				connectionSecondaryText(nextConnection),
 			);
 			persistLastActiveConnectionId(nextConnection.id);
 			setConnection(nextConnection);
@@ -246,7 +269,7 @@ function VeloxApp() {
 
 		connectionRestoreAttemptedRef.current = true;
 		activateConnectionMutation.mutate(target.id);
-	}, [connectionsQuery.data, connection, activateConnectionMutation]);
+	}, [connectionsQuery.data, connection, activateConnectionMutation, autoReconnect]);
 
 	const tablesQuery = useTablesQuery(connection?.id);
 
@@ -323,10 +346,14 @@ function VeloxApp() {
 			try {
 				switch (action) {
 					case "selectAll":
-						queryWorkspaceRef.current?.openTabWithSql(buildSelectAllSql(table));
+						queryWorkspaceRef.current?.openTabWithSql(
+							buildSelectAllSql(table, 200, connection?.engine ?? "postgres"),
+						);
 						return;
 					case "selectCount":
-						queryWorkspaceRef.current?.openTabWithSql(buildSelectCountSql(table));
+						queryWorkspaceRef.current?.openTabWithSql(
+							buildSelectCountSql(table, connection?.engine ?? "postgres"),
+						);
 						return;
 					case "insertTemplate":
 					case "updateTemplate":
@@ -346,18 +373,30 @@ function VeloxApp() {
 
 						if (action === "insertTemplate") {
 							queryWorkspaceRef.current?.openTabWithSql(
-								buildInsertTemplateSql(table, insertCols),
+								buildInsertTemplateSql(
+									table,
+									insertCols,
+									connection?.engine ?? "postgres",
+								),
 							);
 							return;
 						}
 						if (action === "updateTemplate") {
 							queryWorkspaceRef.current?.openTabWithSql(
-								buildUpdateTemplateSql(table, pk),
+								buildUpdateTemplateSql(
+									table,
+									pk,
+									connection?.engine ?? "postgres",
+								),
 							);
 							return;
 						}
 						queryWorkspaceRef.current?.openTabWithSql(
-							buildDeleteTemplateSql(table, pk),
+							buildDeleteTemplateSql(
+								table,
+								pk,
+								connection?.engine ?? "postgres",
+							),
 						);
 						return;
 					}
@@ -372,7 +411,7 @@ function VeloxApp() {
 				});
 			}
 		},
-		[queryClient],
+		[queryClient, connection?.engine],
 	);
 
 	const handleSelectConnection = (nextConnection: ConnectionSummary) => {
@@ -463,17 +502,21 @@ function VeloxApp() {
 	const handleRenameTableRequest = useCallback(
 		(_connectionId: string, table: TableInfo) => {
 			setSelectedTable(table);
-			queryWorkspaceRef.current?.appendQuerySql(buildRenameTableSql(table));
+			queryWorkspaceRef.current?.appendQuerySql(
+				buildRenameTableSql(table, "new_table_name", connection?.engine ?? "postgres"),
+			);
 		},
-		[],
+		[connection?.engine],
 	);
 
 	const handleDeleteTableRequest = useCallback(
 		(_connectionId: string, table: TableInfo) => {
 			setSelectedTable(table);
-			queryWorkspaceRef.current?.appendQuerySql(buildDropTableSql(table));
+			queryWorkspaceRef.current?.appendQuerySql(
+				buildDropTableSql(table, connection?.engine ?? "postgres"),
+			);
 		},
-		[],
+		[connection?.engine],
 	);
 
 	const handleDisconnectConnectionRequest = useCallback(
@@ -510,18 +553,35 @@ function VeloxApp() {
 	const handleTruncateTable = useCallback(
 		(_connectionId: string, table: TableInfo) => {
 			setSelectedTable(table);
+			if ((connection?.engine ?? "postgres") === "mysql") {
+				queryWorkspaceRef.current?.appendQuerySql(
+					`TRUNCATE TABLE ${quoteIdent(table.schema, "mysql")}.${quoteIdent(table.name, "mysql")};`,
+				);
+				return;
+			}
+			if ((connection?.engine ?? "postgres") === "sqlite") {
+				queryWorkspaceRef.current?.appendQuerySql(
+					`DELETE FROM ${quoteIdent(table.name, "sqlite")};`,
+				);
+				return;
+			}
 			queryWorkspaceRef.current?.appendQuerySql(
-				`TRUNCATE TABLE "${table.schema}"."${table.name}" RESTART IDENTITY CASCADE;`,
+				`TRUNCATE TABLE ${quoteIdent(table.schema, "postgres")}.${quoteIdent(table.name, "postgres")} RESTART IDENTITY CASCADE;`,
 			);
 		},
-		[],
+		[connection?.engine],
 	);
 
 	const handleCopyTableName = useCallback(
 		(_connectionId: string, table: TableInfo) => {
-			void navigator.clipboard.writeText(`"${table.schema}"."${table.name}"`);
+			const engine = connection?.engine ?? "postgres";
+			const value =
+				engine === "sqlite"
+					? quoteIdent(table.name, "sqlite")
+					: `${quoteIdent(table.schema, engine)}.${quoteIdent(table.name, engine)}`;
+			void navigator.clipboard.writeText(value);
 		},
-		[],
+		[connection?.engine],
 	);
 
 	const handleRefreshDatabases = useCallback(
@@ -635,6 +695,7 @@ function VeloxApp() {
 
 		await saveResultEditsMutation.mutateAsync({
 			connectionId: connection.id,
+			engine: connection.engine,
 			table: selectedTable,
 			patches,
 		});
@@ -651,6 +712,7 @@ function VeloxApp() {
 
 		await deleteRowsMutation.mutateAsync({
 			connectionId: connection.id,
+			engine: connection.engine,
 			table: selectedTable,
 			primaryKeys,
 		});
@@ -749,7 +811,11 @@ function VeloxApp() {
 									<TabsTrigger value="query" className="px-2.5 text-xs">
 										Query
 									</TabsTrigger>
-									<TabsTrigger value="model" className="px-2.5 text-xs">
+									<TabsTrigger
+										value="model"
+										className="px-2.5 text-xs"
+										disabled={Boolean(connection && connection.engine !== "postgres")}
+									>
 										Model
 									</TabsTrigger>
 								</TabsList>
@@ -761,7 +827,7 @@ function VeloxApp() {
                 </p>
                 <p className="truncate text-sm text-foreground">
                   {connection
-                    ? `Connected to ${connection.database} on ${connection.host}:${connection.port}`
+                    ? connectionHeadline(connection)
                     : "Choose a saved connection or create a new one to start querying"}
                 </p>
               </div>
@@ -792,6 +858,7 @@ function VeloxApp() {
 					<QueryWorkspace
 						ref={queryWorkspaceRef}
 						connectionId={connection?.id ?? null}
+						connectionEngine={connection?.engine ?? null}
 						connectionError={connectionError}
 						connectionErrorMessage={connectionErrorMessage}
 						isDark={isDark}
@@ -824,18 +891,26 @@ function VeloxApp() {
 					/>
 				) : connection?.id ? (
 					<ErrorBoundary>
-						<ModelWorkspace
-							key={connection.id}
-							connectionId={connection.id}
-							defaultDatabaseName={connection.database}
-							isDark={isDark}
-							tables={tablesForUi}
-							tablesErrorMessage={
-								tablesQuery.isError ? tablesErrorMessage : undefined
-							}
-							isTablesLoading={tablesQuery.isLoading}
-							selectedTable={selectedTable}
-						/>
+						{connection.engine === "postgres" ? (
+							<ModelWorkspace
+								key={connection.id}
+								connectionId={connection.id}
+								connectionEngine={connection.engine}
+								defaultDatabaseName={connection.database}
+								isDark={isDark}
+								tables={tablesForUi}
+								tablesErrorMessage={
+									tablesQuery.isError ? tablesErrorMessage : undefined
+								}
+								isTablesLoading={tablesQuery.isLoading}
+								selectedTable={selectedTable}
+							/>
+						) : (
+							<div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+								Model workspace currently supports PostgreSQL only. Active engine:{' '}
+								{engineLabel(connection.engine)}.
+							</div>
+						)}
 					</ErrorBoundary>
 				) : (
 					<div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
@@ -860,6 +935,7 @@ function VeloxApp() {
 					if (!nextOpen) setTablePropertiesTarget(null);
 				}}
 				connectionId={tablePropertiesTarget?.connectionId}
+				tablePropertyEditingSupported={connection?.tablePropertyEditingSupported}
 				table={tablePropertiesTarget?.table ?? null}
 			/>
 

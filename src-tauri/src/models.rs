@@ -139,6 +139,8 @@ pub struct ConnectionSummary {
     pub ssh_config: Option<SshConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_params: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub table_property_editing_supported: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -381,6 +383,7 @@ impl StoredConnection {
             ssl_mode: self.ssl_mode,
             ssh_config: self.ssh_config.clone(),
             extra_params: self.extra_params.clone(),
+            table_property_editing_supported: self.engine == DatabaseEngine::Postgres,
         }
     }
 

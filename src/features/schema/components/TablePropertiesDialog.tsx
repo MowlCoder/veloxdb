@@ -11,6 +11,7 @@ type TablePropertiesDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   connectionId: string | undefined
+  tablePropertyEditingSupported?: boolean
   table: TableInfo | null
 }
 
@@ -63,6 +64,7 @@ export function TablePropertiesDialog({
   open,
   onOpenChange,
   connectionId,
+  tablePropertyEditingSupported = false,
   table,
 }: TablePropertiesDialogProps) {
   const propertiesQuery = useTablePropertiesQuery({
@@ -112,6 +114,11 @@ export function TablePropertiesDialog({
           <div className="px-5 py-3 text-xs text-muted-foreground">
             Editing: <span className="text-foreground">{targetTableLabel}</span>
           </div>
+          {!tablePropertyEditingSupported ? (
+            <div className="px-5 pb-3 text-xs text-amber-600">
+              Table property editing is currently supported for PostgreSQL connections only.
+            </div>
+          ) : null}
 
           <div className="min-h-0 flex-1 overflow-auto px-5 pb-5">
             {propertiesQuery.isLoading ? (
@@ -219,7 +226,13 @@ export function TablePropertiesDialog({
           </Button>
           <Button
             type="button"
-            disabled={applyMutation.isPending || !isDirty || !table || !connectionId}
+            disabled={
+              applyMutation.isPending ||
+              !isDirty ||
+              !table ||
+              !connectionId ||
+              !tablePropertyEditingSupported
+            }
             onClick={async () => {
               if (!table || !connectionId) return
 

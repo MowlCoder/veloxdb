@@ -46,6 +46,7 @@ export function useConnectMutation(options: UseConnectMutationOptions = {}) {
         sslMode: input.sslMode,
         sshConfig: input.sshConfig ?? null,
         extraParams: input.extraParams ?? null,
+        tablePropertyEditingSupported: input.engine === 'postgres',
       }
 
       queryClient.setQueryData<ConnectionSummary[]>(queryKeys.connections(), (current) => {

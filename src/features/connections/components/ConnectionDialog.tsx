@@ -155,7 +155,7 @@ export function ConnectionDialog({
 }: ConnectionDialogProps) {
   const defaultValues = useMemo(
     () => ({
-      name: 'Local Postgres',
+      name: 'Local Database',
       engine: 'postgres' as DatabaseEngine,
       host: '127.0.0.1',
       port: 5432,
@@ -410,15 +410,15 @@ export function ConnectionDialog({
                 id="veloxdb-connection-string"
                 value={connString}
                 onChange={(e) => handleConnStringChange(e.target.value)}
-                placeholder="postgresql://user:password@host:5432/dbname?sslmode=require"
+                placeholder="postgresql://... or mysql://... or sqlite:///..."
                 className={connStringError ? 'border-destructive' : ''}
               />
               {connStringError && (
                 <span className="block text-xs text-destructive">{connStringError}</span>
               )}
               <p className="text-[11px] text-muted-foreground/80">
-                Paste a full PostgreSQL connection URI. Individual fields will be populated
-                automatically.
+                Paste a full connection URI with scheme (`postgresql://`, `mysql://`, or `sqlite:///`).
+                Individual fields will be populated automatically.
               </p>
             </div>
           )}
@@ -678,7 +678,8 @@ export function ConnectionDialog({
               <span>Advanced parameters</span>
             </button>
             <p className="mt-0.5 pl-6 text-[11px] text-muted-foreground/70">
-              Additional PostgreSQL connection parameters (libpq-compatible). Optional.
+              Additional PostgreSQL connection parameters (libpq-compatible). Optional and only
+              applied to PostgreSQL.
             </p>
 
             {advancedOpen && (
@@ -826,7 +827,7 @@ export function ConnectionDialog({
                     </div>
                   ) : (
                     <p className="text-[11px] text-muted-foreground/60">
-                      No custom parameters. Add one to pass extra libpq options.
+                      No custom parameters. Add one to pass extra PostgreSQL options.
                     </p>
                   )}
                 </div>

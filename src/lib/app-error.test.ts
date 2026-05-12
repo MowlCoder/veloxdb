@@ -15,4 +15,16 @@ describe('adapter decode error normalization', () => {
     expect(classifyMessage(message)).toBe('query')
     expect(normalizeError(message).category).toBe('query')
   })
+
+  it('classifies MySQL unknown column as query error', () => {
+    const message = "Unknown column 'full_name' in 'field list'"
+    expect(classifyMessage(message)).toBe('query')
+    expect(normalizeError(message).category).toBe('query')
+  })
+
+  it('classifies SQLite no such table as query error', () => {
+    const message = 'no such table: users'
+    expect(classifyMessage(message)).toBe('query')
+    expect(normalizeError(message).category).toBe('query')
+  })
 })

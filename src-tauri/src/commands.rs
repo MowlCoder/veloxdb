@@ -596,7 +596,12 @@ pub async fn switch_database(
         DatabaseEngine::Mysql => {
             let pool = if let Some(ref ssh_config) = connection_input.ssh_config {
                 if ssh_config.is_active() {
-                    let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, connection_input.port).await {
+                    let remote_port = if connection_input.port == 0 {
+                        DEFAULT_MYSQL_PORT
+                    } else {
+                        connection_input.port
+                    };
+                    let tunnel = match SshTunnel::connect(ssh_config, &connection_input.host, remote_port).await {
                         Ok(tunnel) => tunnel,
                         Err(e) => return Err(format!("SSH tunnel failed: {}", e)),
                     };
@@ -1266,7 +1271,8 @@ pub async fn get_table_properties(
               c.column_name,
               c.data_type,
               c.is_nullable,
-              c.column_default
+              c.column_default,
+              c.extra
             from information_schema.columns c
             where c.table_schema = ? and c.table_name = ?
             order by c.ordinal_position
@@ -1295,10 +1301,51 @@ pub async fn get_table_properties(
             .map(|row| mysql_get_idx::<String>(&row, 0, "column_name", "get_table_properties"))
             .collect::<Result<HashSet<_>, _>>()?;
 
+        let unique_rows = sqlx::query(
+            "
+            select index_name, column_name, seq_in_index
+            from information_schema.statistics
+            where table_schema = ?
+              and table_name = ?
+              and non_unique = 0
+            order by index_name, seq_in_index
+            ",
+        )
+        .bind(&ctx.table_schema)
+        .bind(&ctx.table_name)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut unique_by_index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in unique_rows {
+            let index_name: String = mysql_get_idx(&row, 0, "index_name", "get_table_properties")?;
+            if index_name == "PRIMARY" {
+                continue;
+            }
+            let column_name: String = mysql_get_idx(&row, 1, "column_name", "get_table_properties")?;
+            unique_by_index.entry(index_name).or_default().push(column_name);
+        }
+        let mut unique_cols: HashSet<String> = HashSet::new();
+        let mut composite_unique_cols: HashSet<String> = HashSet::new();
+        for cols in unique_by_index.values() {
+            for col in cols {
+                unique_cols.insert(col.clone());
+            }
+            if cols.len() > 1 {
+                for col in cols {
+                    composite_unique_cols.insert(col.clone());
+                }
+            }
+        }
+
         let mut properties = Vec::new();
         for row in rows {
                 let column_name: String = mysql_get_idx(&row, 2, "column_name", "get_table_properties")?;
                 let is_primary_key = pk_cols.contains(&column_name);
+                let is_unique = is_primary_key || unique_cols.contains(&column_name);
+                let is_part_of_composite_unique = composite_unique_cols.contains(&column_name);
+                let extra: String = mysql_get_idx(&row, 6, "extra", "get_table_properties")?;
+                let lower_extra = extra.to_lowercase();
                 properties.push(ColumnProperties {
                     table_schema: mysql_get_idx(&row, 0, "table_schema", "get_table_properties")?,
                     table_name: mysql_get_idx(&row, 1, "table_name", "get_table_properties")?,
@@ -1306,12 +1353,20 @@ pub async fn get_table_properties(
                     data_type: mysql_get_idx(&row, 3, "data_type", "get_table_properties")?,
                     is_nullable: mysql_get_idx::<String>(&row, 4, "is_nullable", "get_table_properties")? == "YES",
                     is_primary_key,
-                    is_unique: is_primary_key,
-                    is_part_of_composite_unique: false,
+                    is_unique,
+                    is_part_of_composite_unique,
                     column_default: mysql_get_idx::<Option<String>>(&row, 5, "column_default", "get_table_properties")?,
-                    is_identity: false,
-                    identity_generation: None,
-                    is_generated: None,
+                    is_identity: lower_extra.contains("auto_increment"),
+                    identity_generation: if lower_extra.contains("auto_increment") {
+                        Some("BY DEFAULT".to_string())
+                    } else {
+                        None
+                    },
+                    is_generated: if lower_extra.contains("generated") {
+                        Some("ALWAYS".to_string())
+                    } else {
+                        None
+                    },
                 });
             }
         return Ok(properties);
@@ -1324,10 +1379,49 @@ pub async fn get_table_properties(
             .fetch_all(&pool)
             .await
             .map_err(|error| error.to_string())?;
+        let index_list_sql = format!("PRAGMA index_list(\"{}\");", quote_identifier(&ctx.table_name));
+        let index_rows = sqlx::query(&index_list_sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut unique_cols: HashSet<String> = HashSet::new();
+        let mut composite_unique_cols: HashSet<String> = HashSet::new();
+        for index in index_rows {
+            let is_unique = sqlite_get_name::<i64>(&index, "unique", "get_table_properties")? == 1;
+            if !is_unique {
+                continue;
+            }
+            let origin = sqlite_get_name::<String>(&index, "origin", "get_table_properties")?;
+            if origin == "pk" {
+                continue;
+            }
+            let index_name = sqlite_get_name::<String>(&index, "name", "get_table_properties")?;
+            let info_sql = format!("PRAGMA index_info(\"{}\");", quote_identifier(&index_name));
+            let info_rows = sqlx::query(&info_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut cols: Vec<String> = Vec::new();
+            for info in info_rows {
+                if let Ok(name) = sqlite_get_name::<String>(&info, "name", "get_table_properties") {
+                    cols.push(name);
+                }
+            }
+            for col in &cols {
+                unique_cols.insert(col.clone());
+            }
+            if cols.len() > 1 {
+                for col in cols {
+                    composite_unique_cols.insert(col);
+                }
+            }
+        }
         let mut properties = Vec::new();
         for row in rows {
                 let column_name: String = sqlite_get_name(&row, "name", "get_table_properties")?;
                 let is_primary_key = sqlite_get_name::<i64>(&row, "pk", "get_table_properties")? == 1;
+                let is_unique = is_primary_key || unique_cols.contains(&column_name);
+                let is_part_of_composite_unique = composite_unique_cols.contains(&column_name);
                 properties.push(ColumnProperties {
                     table_schema: "main".to_string(),
                     table_name: ctx.table_name.clone(),
@@ -1335,8 +1429,8 @@ pub async fn get_table_properties(
                     data_type: sqlite_get_name(&row, "type", "get_table_properties")?,
                     is_nullable: sqlite_get_name::<i64>(&row, "notnull", "get_table_properties")? == 0,
                     is_primary_key,
-                    is_unique: is_primary_key,
-                    is_part_of_composite_unique: false,
+                    is_unique,
+                    is_part_of_composite_unique,
                     column_default: sqlite_get_name::<Option<String>>(&row, "dflt_value", "get_table_properties")?,
                     is_identity: false,
                     identity_generation: None,
@@ -1476,7 +1570,14 @@ pub async fn apply_table_properties(
 ) -> Result<(), String> {
     let (connection_id, engine) = resolve_connection_engine(&app, &state, input.connection_id.clone()).await?;
     if engine != DatabaseEngine::Postgres {
-        return Err("Table property editing is currently supported for PostgreSQL only.".to_string());
+        return Err(format!(
+            "Table property editing is not supported for {} connections yet.",
+            match engine {
+                DatabaseEngine::Postgres => "PostgreSQL",
+                DatabaseEngine::Mysql => "MySQL",
+                DatabaseEngine::Sqlite => "SQLite",
+            }
+        ));
     }
 
     with_pool_client_retry(&app, &state, &connection_id, input, |mut client, input| async move {
@@ -1850,7 +1951,7 @@ pub async fn get_table_indexes(
               index_name = 'PRIMARY' as is_primary,
               true as is_valid,
               false as is_partial,
-              index_name as definition,
+              concat(index_name, ' (', group_concat(column_name order by seq_in_index separator ', '), ')') as definition,
               0 as index_bytes,
               0 as idx_scan,
               0 as idx_tup_read,
@@ -1904,16 +2005,30 @@ pub async fn get_table_indexes(
         let truncated = rows.len() as i64 > MAX_TABLE_INDEX_ROWS;
         let mut indexes = Vec::new();
         for row in rows.into_iter().take(MAX_TABLE_INDEX_ROWS as usize) {
+            let index_name: String = sqlite_get_name(&row, "name", "get_table_indexes")?;
+            let index_info_sql = format!("PRAGMA index_info(\"{}\");", quote_identifier(&index_name));
+            let index_info_rows = sqlx::query(&index_info_sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            let index_columns = index_info_rows
+                .into_iter()
+                .filter_map(|idx| sqlite_get_name::<String>(&idx, "name", "get_table_indexes").ok())
+                .collect::<Vec<_>>();
             indexes.push(IndexInfo {
                 index_schema: "main".to_string(),
-                index_name: sqlite_get_name(&row, "name", "get_table_indexes")?,
+                index_name: index_name.clone(),
                 table_schema: "main".to_string(),
                 table_name: ctx.table_name.clone(),
                 is_unique: sqlite_get_name::<i64>(&row, "unique", "get_table_indexes")? == 1,
-                is_primary: false,
+                is_primary: sqlite_get_name::<String>(&row, "origin", "get_table_indexes")? == "pk",
                 is_valid: true,
-                is_partial: false,
-                definition: "".to_string(),
+                is_partial: sqlite_get_name::<i64>(&row, "partial", "get_table_indexes")? == 1,
+                definition: if index_columns.is_empty() {
+                    format!("index {}", index_name)
+                } else {
+                    format!("index {} ({})", index_name, index_columns.join(", "))
+                },
                 index_bytes: 0,
                 idx_scan: 0,
                 idx_tup_read: 0,

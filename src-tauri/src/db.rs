@@ -263,7 +263,8 @@ pub async fn build_mysql_pool_custom(host: &str, port: u16, input: &ConnectionIn
 }
 
 pub async fn build_mysql_pool(input: &ConnectionInput) -> Result<MySqlPool, String> {
-    build_mysql_pool_custom(&input.host, input.port, input).await
+    let port = if input.port == 0 { DEFAULT_MYSQL_PORT } else { input.port };
+    build_mysql_pool_custom(&input.host, port, input).await
 }
 
 pub async fn build_sqlite_pool(input: &ConnectionInput) -> Result<SqlitePool, String> {
@@ -390,9 +391,10 @@ pub async fn get_or_create_pool(
 
     let input = stored_connection.to_input();
 
+    let resolved_port = if input.port == 0 { DEFAULT_MYSQL_PORT } else { input.port };
     let (host, port) = if let Some(ref ssh_config) = input.ssh_config {
         if ssh_config.is_active() {
-            let tunnel = SshTunnel::connect(ssh_config, &input.host, input.port).await?;
+            let tunnel = SshTunnel::connect(ssh_config, &input.host, resolved_port).await?;
             let local_port = tunnel.local_port;
             state
                 .ssh_tunnels
@@ -401,10 +403,10 @@ pub async fn get_or_create_pool(
                 .insert(connection_id.to_string(), tunnel);
             ("127.0.0.1".to_string(), local_port)
         } else {
-            (input.host.clone(), input.port)
+            (input.host.clone(), resolved_port)
         }
     } else {
-        (input.host.clone(), input.port)
+        (input.host.clone(), resolved_port)
     };
 
     let pool = build_pool_custom(&host, port, &input)?;

@@ -487,7 +487,7 @@ export function ModelInspector({
         >
           <div className="mb-4 rounded-md border border-border/80 bg-muted/20 px-2.5 py-2 text-[10px] leading-snug text-muted-foreground">
             Staged items below are applied when you run{' '}
-            <span className="font-medium text-foreground">Apply entire model</span> in the diagram toolbar (with
+            <span className="font-medium text-foreground">Review &amp; Apply</span> in the diagram toolbar (with
             schema/table renames and column null/unique overrides).
           </div>
 
@@ -770,7 +770,7 @@ export function ModelInspector({
       </Tabs>
 
       <div className="shrink-0 border-t border-border px-3 py-2 text-[10px] text-muted-foreground">
-        Draft table changes and overrides: toolbar <span className="font-medium text-foreground">Apply entire model</span>
+        Draft table changes and overrides: toolbar <span className="font-medium text-foreground">Review &amp; Apply</span>
         . Index DDL: confirm in the Indexes tab dialog.
       </div>
     </div>
